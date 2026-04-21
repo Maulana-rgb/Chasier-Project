@@ -1,161 +1,273 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 
-export const useStore = create(
-  persist(
-    (set, get) => ({
-      users: [
-        { username: 'kasir', password: 'kasir123', role: 'cashier' },
-        { username: 'owner', password: 'owner123', role: 'owner' },
-      ],
+const apiRequest = async (path, { method = 'GET', body } = {}) => {
+  const res = await fetch(path, {
+    method,
+    credentials: 'include',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const rawText = await res.text().catch(() => '')
+  const data = rawText ? (() => {
+    try {
+      return JSON.parse(rawText)
+    } catch {
+      return { rawText }
+    }
+  })() : {}
+  if (!res.ok) {
+    const err = new Error(data?.error || `HTTP_${res.status}`)
+    err.status = res.status
+    err.data = data
+    throw err
+  }
+  return data
+}
+
+export const useStore = create((set, get) => ({
+  currentUser: null,
+  isAuthLoading: true,
+  isDataLoading: false,
+
+  categories: [],
+  menus: [],
+  addOns: [],
+  transactions: [],
+  shifts: [],
+  openShiftId: null,
+  users: [],
+
+  hydrateFromBootstrap: (data) => {
+    set({
+      categories: data.categories || [],
+      menus: data.menus || [],
+      addOns: data.addOns || [],
+      transactions: data.transactions || [],
+      shifts: data.shifts || [],
+      openShiftId: data.openShiftId ?? null,
+      users: data.users || [],
+    })
+  },
+
+  init: async () => {
+    set({ isAuthLoading: true })
+    try {
+      const { user } = await apiRequest('/api/auth/me')
+      if (!user) {
+        set({
+          currentUser: null,
+          isAuthLoading: false,
+          categories: [],
+          menus: [],
+          addOns: [],
+          transactions: [],
+          shifts: [],
+          openShiftId: null,
+          users: [],
+        })
+        return
+      }
+      set({ currentUser: user, isDataLoading: true })
+      const data = await apiRequest('/api/bootstrap')
+      get().hydrateFromBootstrap(data)
+      set({ currentUser: data.user || user, isAuthLoading: false, isDataLoading: false })
+    } catch {
+      set({
+        currentUser: null,
+        isAuthLoading: false,
+        isDataLoading: false,
+        categories: [],
+        menus: [],
+        addOns: [],
+        transactions: [],
+        shifts: [],
+        openShiftId: null,
+        users: [],
+      })
+    }
+  },
+
+  login: async (username, password) => {
+    try {
+      const { user } = await apiRequest('/api/auth/login', { method: 'POST', body: { username, password } })
+      set({ currentUser: user, isDataLoading: true })
+      const data = await apiRequest('/api/bootstrap')
+      get().hydrateFromBootstrap(data)
+      set({ currentUser: data.user || user, isDataLoading: false })
+      return true
+    } catch {
+      return false
+    }
+  },
+
+  logout: async () => {
+    try {
+      await apiRequest('/api/auth/logout', { method: 'POST' })
+    } catch {
+      // ignore
+    }
+    set({
       currentUser: null,
-      login: (username, password) => {
-        const u = String(username || '').trim()
-        const p = String(password || '')
-        const user = get().users.find(x => x.username === u && x.password === p)
-        if (!user) return false
-        set({ currentUser: { username: user.username, role: user.role } })
-        return true
-      },
-      logout: () => set({ currentUser: null }),
-
+      categories: [],
+      menus: [],
+      addOns: [],
+      transactions: [],
       shifts: [],
       openShiftId: null,
-      openShift: (openingBalance) => {
-        const opening = Number(openingBalance) || 0
-        if (get().openShiftId) return null
-        const id = Date.now()
-        const openedAt = new Date().toISOString()
-        set((state) => ({
-          shifts: [...state.shifts, { id, openedAt, openingBalance: opening, closedAt: null, closingCash: null, cashSales: 0, qrisSales: 0, expectedCash: 0, difference: 0 }],
-          openShiftId: id,
-        }))
-        return id
-      },
-      closeShift: (closingCash) => {
-        const openShiftId = get().openShiftId
-        if (!openShiftId) return null
+      users: [],
+    })
+  },
 
-        const closing = Number(closingCash) || 0
-        const closedAt = new Date().toISOString()
-
-        const shiftTransactions = get().transactions.filter(t => t.shiftId === openShiftId)
-        const cashSales = shiftTransactions
-          .filter(t => t.paymentMethod === 'Cash')
-          .reduce((acc, t) => acc + (Number(t.total) || 0), 0)
-        const qrisSales = shiftTransactions
-          .filter(t => t.paymentMethod === 'QRIS')
-          .reduce((acc, t) => acc + (Number(t.total) || 0), 0)
-
-        const shift = get().shifts.find(s => s.id === openShiftId)
-        const opening = Number(shift?.openingBalance) || 0
-        const expectedCash = opening + cashSales
-        const difference = closing - expectedCash
-
-        set((state) => ({
-          shifts: state.shifts.map(s => s.id === openShiftId
-            ? { ...s, closedAt, closingCash: closing, cashSales, qrisSales, expectedCash, difference }
-            : s
-          ),
-          openShiftId: null,
-        }))
-
-        return openShiftId
-      },
-
-      categories: ['Dimsum Steamed', 'Dimsum Fried', 'Bakpao', 'Minuman', 'Lainnya'],
-      menus: [
-        { id: 1, name: 'Siomay Ayam', price: 15000, hpp: 8000, category: 'Dimsum Steamed', addOnIds: [] },
-        { id: 2, name: 'Hakau Udang', price: 18000, hpp: 10000, category: 'Dimsum Steamed', addOnIds: [] },
-        { id: 3, name: 'Pangsit Goreng', price: 12000, hpp: 6500, category: 'Dimsum Fried', addOnIds: [] },
-        { id: 4, name: 'Bakpao Telur Asin', price: 20000, hpp: 12000, category: 'Bakpao', addOnIds: [] },
-      ],
-      addOns: [
-        { id: 101, name: 'Extra Saus', price: 2000, hpp: 700 },
-        { id: 102, name: 'Extra Chili Oil', price: 3000, hpp: 1200 },
-        { id: 103, name: 'Extra Mayonnaise', price: 2500, hpp: 1000 },
-      ],
-      transactions: [],
-
-      addCategory: (categoryName) => set((state) => {
-        const trimmed = String(categoryName || '').trim()
-        if (!trimmed) return state
-        if (state.categories.includes(trimmed)) return state
-        return { categories: [...state.categories, trimmed] }
-      }),
-      updateCategory: (oldName, newName) => set((state) => {
-        const next = String(newName || '').trim()
-        const prev = String(oldName || '').trim()
-        if (!prev || !next) return state
-        if (prev === next) return state
-        if (state.categories.includes(next)) return state
-
-        return {
-          categories: state.categories.map(c => c === prev ? next : c),
-          menus: state.menus.map(m => m.category === prev ? { ...m, category: next } : m),
-        }
-      }),
-      deleteCategory: (categoryName) => set((state) => {
-        const name = String(categoryName || '').trim()
-        if (!name) return state
-        if (name === 'Lainnya') return state
-
-        const nextCategories = state.categories.filter(c => c !== name)
-        const ensureOthers = nextCategories.includes('Lainnya') ? nextCategories : [...nextCategories, 'Lainnya']
-
-        return {
-          categories: ensureOthers,
-          menus: state.menus.map(m => m.category === name ? { ...m, category: 'Lainnya' } : m),
-        }
-      }),
-
-      addMenu: (menu) => set((state) => ({ 
-        categories: menu.category && !state.categories.includes(menu.category) ? [...state.categories, menu.category] : state.categories,
-        menus: [
-          ...state.menus,
-          {
-            ...menu,
-            price: Number(menu.price) || 0,
-            hpp: Number(menu.hpp) || 0,
-            category: menu.category || 'Lainnya',
-            addOnIds: menu.addOnIds || [],
-            id: Date.now(),
-          }
-        ],
-      })),
-      updateMenu: (id, updatedMenu) => set((state) => ({
-        categories: updatedMenu.category && !state.categories.includes(updatedMenu.category) ? [...state.categories, updatedMenu.category] : state.categories,
-        menus: state.menus.map(m => m.id === id ? { ...m, ...updatedMenu, price: Number(updatedMenu.price) || 0, hpp: Number(updatedMenu.hpp) || 0, category: updatedMenu.category || 'Lainnya' } : m)
-      })),
-      deleteMenu: (id) => set((state) => ({
-        menus: state.menus.filter(m => m.id !== id)
-      })),
-
-      addAddOn: (addOn) => set((state) => ({
-        addOns: [...state.addOns, { ...addOn, price: Number(addOn.price) || 0, hpp: Number(addOn.hpp) || 0, id: Date.now() }]
-      })),
-      updateAddOn: (id, updatedAddOn) => set((state) => ({
-        addOns: state.addOns.map(a => a.id === id ? { ...a, ...updatedAddOn, price: Number(updatedAddOn.price) || 0, hpp: Number(updatedAddOn.hpp) || 0 } : a)
-      })),
-      deleteAddOn: (id) => set((state) => ({
-        addOns: state.addOns.filter(a => a.id !== id),
-        menus: state.menus.map(m => ({
-          ...m,
-          addOnIds: (m.addOnIds || []).filter(addOnId => addOnId !== id),
-        })),
-      })),
-
-      addTransaction: (transaction) => {
-        const id = Date.now()
-        const date = new Date().toISOString()
-
-        set((state) => ({
-          transactions: [...state.transactions, { ...transaction, id, date }]
-        }))
-      },
-    }),
-    {
-      name: 'dimsum-storage',
+  refresh: async () => {
+    set({ isDataLoading: true })
+    try {
+      const data = await apiRequest('/api/bootstrap')
+      get().hydrateFromBootstrap(data)
+      set({ currentUser: data.user || get().currentUser, isDataLoading: false })
+    } catch {
+      set({ isDataLoading: false })
     }
-  )
-)
+  },
+
+  addCategory: async (categoryName) => {
+    const name = String(categoryName || '').trim()
+    if (!name) return
+    const data = await apiRequest('/api/categories', { method: 'POST', body: { name } })
+    get().hydrateFromBootstrap(data)
+  },
+
+  updateCategory: async (oldName, newName) => {
+    const prev = String(oldName || '').trim()
+    const next = String(newName || '').trim()
+    if (!prev || !next) return
+    const data = await apiRequest('/api/categories', { method: 'PATCH', body: { oldName: prev, newName: next } })
+    get().hydrateFromBootstrap(data)
+  },
+
+  deleteCategory: async (categoryName) => {
+    const name = String(categoryName || '').trim()
+    if (!name) return
+    const data = await apiRequest(`/api/categories?name=${encodeURIComponent(name)}`, { method: 'DELETE' })
+    get().hydrateFromBootstrap(data)
+  },
+
+  addMenu: async (menu) => {
+    const payload = {
+      name: String(menu?.name || '').trim(),
+      price: Number(menu?.price) || 0,
+      hpp: Number(menu?.hpp) || 0,
+      category: String(menu?.category || '').trim(),
+      addOnIds: Array.isArray(menu?.addOnIds) ? menu.addOnIds : [],
+      image: menu?.image ?? undefined,
+    }
+    if (!payload.name) return
+    const data = await apiRequest('/api/menus', { method: 'POST', body: payload })
+    get().hydrateFromBootstrap(data)
+  },
+
+  updateMenu: async (id, updatedMenu) => {
+    const payload = {
+      name: String(updatedMenu?.name || '').trim(),
+      price: Number(updatedMenu?.price) || 0,
+      hpp: Number(updatedMenu?.hpp) || 0,
+      category: String(updatedMenu?.category || '').trim(),
+      addOnIds: Array.isArray(updatedMenu?.addOnIds) ? updatedMenu.addOnIds : [],
+      image: updatedMenu?.image ?? undefined,
+    }
+    if (!payload.name) return
+    const data = await apiRequest(`/api/menus/${encodeURIComponent(id)}`, { method: 'PUT', body: payload })
+    get().hydrateFromBootstrap(data)
+  },
+
+  deleteMenu: async (id) => {
+    const data = await apiRequest(`/api/menus/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    get().hydrateFromBootstrap(data)
+  },
+
+  addAddOn: async (addOn) => {
+    const payload = {
+      name: String(addOn?.name || '').trim(),
+      price: Number(addOn?.price) || 0,
+      hpp: Number(addOn?.hpp) || 0,
+    }
+    if (!payload.name) return
+    const data = await apiRequest('/api/addons', { method: 'POST', body: payload })
+    get().hydrateFromBootstrap(data)
+  },
+
+  updateAddOn: async (id, updatedAddOn) => {
+    const payload = {
+      name: String(updatedAddOn?.name || '').trim(),
+      price: Number(updatedAddOn?.price) || 0,
+      hpp: Number(updatedAddOn?.hpp) || 0,
+    }
+    if (!payload.name) return
+    const data = await apiRequest(`/api/addons/${encodeURIComponent(id)}`, { method: 'PUT', body: payload })
+    get().hydrateFromBootstrap(data)
+  },
+
+  deleteAddOn: async (id) => {
+    const data = await apiRequest(`/api/addons/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    get().hydrateFromBootstrap(data)
+  },
+
+  openShift: async (openingBalance) => {
+    const opening = Number(openingBalance) || 0
+    const { shiftId } = await apiRequest('/api/shifts/open', { method: 'POST', body: { openingBalance: opening } })
+    await get().refresh()
+    return shiftId
+  },
+
+  closeShift: async (closingCash) => {
+    const closing = Number(closingCash) || 0
+    const data = await apiRequest('/api/shifts/close', { method: 'POST', body: { closingCash: closing } })
+    await get().refresh()
+    return {
+      shiftId: Number(data?.shiftId) || null,
+      openingBalance: Number(data?.openingBalance) || 0,
+      cashSales: Number(data?.cashSales) || 0,
+      qrisSales: Number(data?.qrisSales) || 0,
+      closingCash: Number(data?.closingCash) || 0,
+      difference: Number(data?.difference) || 0,
+    }
+  },
+
+  addTransaction: async (transaction) => {
+    const payload = {
+      paymentMethod: String(transaction?.paymentMethod || ''),
+      customerName: String(transaction?.customerName || ''),
+      subtotal: Number(transaction?.subtotal) || 0,
+      total: Number(transaction?.total) || 0,
+      cashAmount: transaction?.cashAmount ?? null,
+      changeAmount: transaction?.changeAmount ?? null,
+      items: Array.isArray(transaction?.items) ? transaction.items : [],
+    }
+    const data = await apiRequest('/api/transactions', { method: 'POST', body: payload })
+    get().hydrateFromBootstrap(data)
+    const createdId = data?.createdTransactionId ? Number(data.createdTransactionId) : null
+    const tx = createdId
+      ? (data.transactions || []).find(t => Number(t.id) === createdId) || null
+      : (data.transactions || [])[0] || null
+    return tx
+  },
+
+  fetchUsers: async () => {
+    const data = await apiRequest('/api/users')
+    set({ users: data.users || [] })
+  },
+
+  createUser: async ({ username, password, role }) => {
+    const data = await apiRequest('/api/users', { method: 'POST', body: { username, password, role } })
+    set({ users: data.users || [] })
+  },
+
+  updateUserPassword: async (id, password) => {
+    await apiRequest(`/api/users/${encodeURIComponent(id)}/password`, { method: 'PATCH', body: { password } })
+  },
+
+  resetUserPassword: async (id, password) => {
+    const body = password === undefined ? {} : { password }
+    const data = await apiRequest(`/api/users/${encodeURIComponent(id)}/reset-password`, { method: 'POST', body })
+    return data?.tempPassword || ''
+  },
+}))

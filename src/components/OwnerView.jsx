@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useStore } from '../store/useStore'
 import { Plus, Trash2, Edit2, Save, X, Utensils, Menu } from 'lucide-react'
 
@@ -7,10 +7,45 @@ const OwnerView = () => {
     menus, addMenu, updateMenu, deleteMenu, 
     addOns, addAddOn, updateAddOn, deleteAddOn,
     categories, addCategory, updateCategory, deleteCategory,
+    users, fetchUsers, createUser, updateUserPassword, resetUserPassword,
   } = useStore()
 
   const toDigits = (value) => String(value || '').replace(/\D/g, '')
   const formatIdr = (digits) => digits ? Number(digits).toLocaleString('id-ID') : ''
+
+  const compressImageFile = async (file) => {
+    if (!file) return null
+    if (!file.type.startsWith('image/')) return null
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result || ''))
+      reader.onerror = () => reject(new Error('READ_FAILED'))
+      reader.readAsDataURL(file)
+    })
+
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image()
+      i.onload = () => resolve(i)
+      i.onerror = () => reject(new Error('IMAGE_LOAD_FAILED'))
+      i.src = dataUrl
+    })
+
+    const maxSize = 160
+    const scale = Math.min(1, maxSize / Math.max(img.width || 1, img.height || 1))
+    const w = Math.max(1, Math.round((img.width || 1) * scale))
+    const h = Math.max(1, Math.round((img.height || 1) * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(img, 0, 0, w, h)
+
+    const out = canvas.toDataURL('image/jpeg', 0.75)
+    if (out.length > 200_000) return null
+    return out
+  }
 
   const [isAddingCategory, setIsAddingCategory] = useState(false)
   const [newCategory, setNewCategory] = useState('')
@@ -18,14 +53,30 @@ const OwnerView = () => {
   const [editCategoryName, setEditCategoryName] = useState('')
 
   const [isAdding, setIsAdding] = useState(false)
-  const [newMenu, setNewMenu] = useState({ name: '', price: '', hpp: '', category: 'Dimsum Steamed', addOnIds: [] })
+  const [newMenu, setNewMenu] = useState({ name: '', price: '', hpp: '', category: 'Dimsum Steamed', addOnIds: [], image: null })
   const [editingId, setEditingId] = useState(null)
-  const [editForm, setEditForm] = useState({ name: '', price: '', hpp: '', category: '', addOnIds: [] })
+  const [editForm, setEditForm] = useState({ name: '', price: '', hpp: '', category: '', addOnIds: [], image: null })
 
   const [isAddingAddOn, setIsAddingAddOn] = useState(false)
   const [newAddOn, setNewAddOn] = useState({ name: '', price: '', hpp: '' })
   const [editingAddOnId, setEditingAddOnId] = useState(null)
   const [editAddOnForm, setEditAddOnForm] = useState({ name: '', price: '', hpp: '' })
+
+  const [isAddingUser, setIsAddingUser] = useState(false)
+  const [newUser, setNewUser] = useState({ username: '', password: '' })
+  const [userError, setUserError] = useState('')
+  const [passwordEditUserId, setPasswordEditUserId] = useState(null)
+  const [newPasswordValue, setNewPasswordValue] = useState('')
+  const [lastReset, setLastReset] = useState(null)
+
+  const [activeTab, setActiveTab] = useState('menu')
+
+  useEffect(() => {
+    if (activeTab !== 'user') return
+    fetchUsers().catch((err) => {
+      setUserError(err?.data?.error || err?.message || 'Gagal memuat user')
+    })
+  }, [activeTab, fetchUsers])
 
   const toggleIdInArray = (array, id) => {
     if (array.includes(id)) return array.filter(x => x !== id)
@@ -36,28 +87,28 @@ const OwnerView = () => {
     return addOns.filter(a => ids.includes(a.id)).map(a => a.name)
   }
 
-  const handleAdd = (e) => {
+  const handleAdd = async (e) => {
     e.preventDefault()
     if (!newMenu.name || !newMenu.price) return
-    addMenu({ ...newMenu, price: Number(newMenu.price) || 0, hpp: Number(newMenu.hpp) || 0 })
-    setNewMenu({ name: '', price: '', hpp: '', category: 'Dimsum Steamed', addOnIds: [] })
+    await addMenu({ ...newMenu, price: Number(newMenu.price) || 0, hpp: Number(newMenu.hpp) || 0 })
+    setNewMenu({ name: '', price: '', hpp: '', category: 'Dimsum Steamed', addOnIds: [], image: null })
     setIsAdding(false)
   }
 
   const startEdit = (menu) => {
     setEditingId(menu.id)
-    setEditForm({ name: menu.name, price: String(menu.price || ''), hpp: String(menu.hpp || ''), category: menu.category, addOnIds: menu.addOnIds || [] })
+    setEditForm({ name: menu.name, price: String(menu.price || ''), hpp: String(menu.hpp || ''), category: menu.category, addOnIds: menu.addOnIds || [], image: menu.image ?? null })
   }
 
-  const handleUpdate = (id) => {
-    updateMenu(id, { ...editForm, price: Number(editForm.price) || 0, hpp: Number(editForm.hpp) || 0 })
+  const handleUpdate = async (id) => {
+    await updateMenu(id, { ...editForm, price: Number(editForm.price) || 0, hpp: Number(editForm.hpp) || 0 })
     setEditingId(null)
   }
 
-  const handleAddAddOn = (e) => {
+  const handleAddAddOn = async (e) => {
     e.preventDefault()
     if (!newAddOn.name || !newAddOn.price) return
-    addAddOn({ ...newAddOn, price: Number(newAddOn.price) || 0, hpp: Number(newAddOn.hpp) || 0 })
+    await addAddOn({ ...newAddOn, price: Number(newAddOn.price) || 0, hpp: Number(newAddOn.hpp) || 0 })
     setNewAddOn({ name: '', price: '', hpp: '' })
     setIsAddingAddOn(false)
   }
@@ -67,15 +118,15 @@ const OwnerView = () => {
     setEditAddOnForm({ name: addOn.name, price: String(addOn.price || ''), hpp: String(addOn.hpp || '') })
   }
 
-  const handleUpdateAddOn = (id) => {
-    updateAddOn(id, { ...editAddOnForm, price: Number(editAddOnForm.price) || 0, hpp: Number(editAddOnForm.hpp) || 0 })
+  const handleUpdateAddOn = async (id) => {
+    await updateAddOn(id, { ...editAddOnForm, price: Number(editAddOnForm.price) || 0, hpp: Number(editAddOnForm.hpp) || 0 })
     setEditingAddOnId(null)
   }
 
-  const handleAddCategory = (e) => {
+  const handleAddCategory = async (e) => {
     e.preventDefault()
     if (!newCategory.trim()) return
-    addCategory(newCategory)
+    await addCategory(newCategory)
     setNewCategory('')
     setIsAddingCategory(false)
   }
@@ -85,16 +136,189 @@ const OwnerView = () => {
     setEditCategoryName(name)
   }
 
-  const handleUpdateCategory = () => {
+  const handleUpdateCategory = async () => {
     if (!editingCategory) return
     if (!editCategoryName.trim()) return
-    updateCategory(editingCategory, editCategoryName)
+    await updateCategory(editingCategory, editCategoryName)
     setEditingCategory(null)
     setEditCategoryName('')
   }
 
+  const handleCreateUser = async (e) => {
+    e.preventDefault()
+    setUserError('')
+    setLastReset(null)
+    try {
+      await createUser({ username: newUser.username, password: newUser.password, role: 'cashier' })
+      setNewUser({ username: '', password: '' })
+      setIsAddingUser(false)
+    } catch (err) {
+      setUserError(err?.data?.error || err?.message || 'Gagal membuat user')
+    }
+  }
+
+  const handleSaveUserPassword = async (id) => {
+    if (!newPasswordValue) return
+    setUserError('')
+    setLastReset(null)
+    try {
+      await updateUserPassword(id, newPasswordValue)
+      setPasswordEditUserId(null)
+      setNewPasswordValue('')
+    } catch (err) {
+      setUserError(err?.data?.error || err?.message || 'Gagal mengganti password')
+    }
+  }
+
+  const handleResetUserPassword = async (u) => {
+    setUserError('')
+    try {
+      const tempPassword = await resetUserPassword(u.id)
+      setLastReset({ username: u.username, tempPassword })
+    } catch (err) {
+      setUserError(err?.data?.error || err?.message || 'Gagal reset password')
+    }
+  }
+
   return (
     <div className="max-w-6xl mx-auto space-y-8">
+      <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('menu')}
+          className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'menu' ? 'bg-dimsum-red text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+        >
+          Menu
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('category')}
+          className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'category' ? 'bg-dimsum-red text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+        >
+          Kategori
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('addon')}
+          className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'addon' ? 'bg-dimsum-red text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+        >
+          Add-on
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('user')}
+          className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'user' ? 'bg-dimsum-red text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+        >
+          User
+        </button>
+      </div>
+
+      {activeTab === 'user' && (
+      <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-2">
+            <Menu className="text-dimsum-red" />
+            <h3 className="text-xl font-bold text-dimsum-dark">Manajemen User</h3>
+          </div>
+          <button
+            onClick={() => { setIsAddingUser(true); setUserError(''); setLastReset(null) }}
+            className="bg-dimsum-red text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-red-700 transition-colors"
+          >
+            <Plus size={20} /> Tambah User
+          </button>
+        </div>
+
+        {userError && (
+          <div className="mb-4 p-3 rounded-xl bg-red-50 text-red-700 text-sm font-bold">
+            {userError}
+          </div>
+        )}
+
+        {lastReset?.tempPassword && (
+          <div className="mb-4 p-3 rounded-xl bg-yellow-50 text-yellow-800 text-sm font-bold">
+            Password baru untuk {lastReset.username}: <span className="font-mono">{lastReset.tempPassword}</span>
+          </div>
+        )}
+
+        {isAddingUser && (
+          <form onSubmit={handleCreateUser} className="mb-8 p-4 bg-gray-50 rounded-lg grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <div>
+              <label className="block text-sm font-medium mb-1">Username</label>
+              <input
+                type="text"
+                value={newUser.username}
+                onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                className="w-full p-2 border rounded"
+                placeholder="misal: kasir2"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Password</label>
+              <input
+                type="password"
+                value={newUser.password}
+                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                className="w-full p-2 border rounded"
+                placeholder="password"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button type="submit" className="flex-1 bg-green-600 text-white p-2 rounded hover:bg-green-700">Simpan</button>
+              <button type="button" onClick={() => setIsAddingUser(false)} className="flex-1 bg-gray-400 text-white p-2 rounded hover:bg-gray-500">Batal</button>
+            </div>
+          </form>
+        )}
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="border-b-2 border-gray-100">
+                <th className="py-3 px-4">Username</th>
+                <th className="py-3 px-4">Dibuat</th>
+                <th className="py-3 px-4 text-right">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(users || []).map((u) => (
+                <tr key={u.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                  <td className="py-3 px-4 font-medium">{u.username}</td>
+                  <td className="py-3 px-4 text-xs text-gray-500">{u.createdAt ? new Date(u.createdAt).toLocaleString('id-ID') : '-'}</td>
+                  <td className="py-3 px-4 text-right">
+                    <div className="flex justify-end gap-2 items-center">
+                      {passwordEditUserId === u.id ? (
+                        <>
+                          <input
+                            type="password"
+                            value={newPasswordValue}
+                            onChange={(e) => setNewPasswordValue(e.target.value)}
+                            className="p-1 border rounded"
+                            placeholder="password baru"
+                          />
+                          <button onClick={async () => { await handleSaveUserPassword(u.id) }} className="text-green-600 hover:text-green-800"><Save size={18} /></button>
+                          <button onClick={() => { setPasswordEditUserId(null); setNewPasswordValue('') }} className="text-gray-500 hover:text-gray-700"><X size={18} /></button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => { setPasswordEditUserId(u.id); setNewPasswordValue(''); setUserError(''); setLastReset(null) }} className="text-blue-600 hover:text-blue-800"><Edit2 size={18} /></button>
+                          <button onClick={async () => { await handleResetUserPassword(u) }} className="text-dimsum-red hover:text-red-800 font-bold text-xs px-2 py-1 rounded bg-red-50">Reset</button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {(users || []).length === 0 && (
+                <tr>
+                  <td className="py-6 px-4 text-gray-400" colSpan={3}>Belum ada user</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      )}
+
+      {activeTab === 'category' && (
       <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
         <div className="flex justify-between items-center mb-6">
           <div className="flex items-center gap-2">
@@ -159,7 +383,7 @@ const OwnerView = () => {
                       ) : (
                         <>
                           <button onClick={() => startEditCategory(c)} className="text-blue-600 hover:text-blue-800"><Edit2 size={18} /></button>
-                          <button onClick={() => deleteCategory(c)} disabled={c === 'Lainnya'} className={`hover:text-red-800 ${c === 'Lainnya' ? 'text-gray-300 cursor-not-allowed' : 'text-red-600'}`}><Trash2 size={18} /></button>
+                          <button onClick={async () => { await deleteCategory(c) }} disabled={c === 'Lainnya'} className={`hover:text-red-800 ${c === 'Lainnya' ? 'text-gray-300 cursor-not-allowed' : 'text-red-600'}`}><Trash2 size={18} /></button>
                         </>
                       )}
                     </div>
@@ -175,7 +399,9 @@ const OwnerView = () => {
           </table>
         </div>
       </section>
+      )}
 
+      {activeTab === 'addon' && (
       <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
         <div className="flex justify-between items-center mb-6">
           <div className="flex items-center gap-2">
@@ -280,13 +506,13 @@ const OwnerView = () => {
                     <div className="flex justify-end gap-2">
                       {editingAddOnId === addOn.id ? (
                         <>
-                          <button onClick={() => handleUpdateAddOn(addOn.id)} className="text-green-600 hover:text-green-800"><Save size={18} /></button>
+                          <button onClick={async () => { await handleUpdateAddOn(addOn.id) }} className="text-green-600 hover:text-green-800"><Save size={18} /></button>
                           <button onClick={() => setEditingAddOnId(null)} className="text-gray-500 hover:text-gray-700"><X size={18} /></button>
                         </>
                       ) : (
                         <>
                           <button onClick={() => startEditAddOn(addOn)} className="text-blue-600 hover:text-blue-800"><Edit2 size={18} /></button>
-                          <button onClick={() => deleteAddOn(addOn.id)} className="text-red-600 hover:text-red-800"><Trash2 size={18} /></button>
+                          <button onClick={async () => { await deleteAddOn(addOn.id) }} className="text-red-600 hover:text-red-800"><Trash2 size={18} /></button>
                         </>
                       )}
                     </div>
@@ -302,8 +528,10 @@ const OwnerView = () => {
           </table>
         </div>
       </section>
+      )}
 
       {/* Menu Management */}
+      {activeTab === 'menu' && (
       <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
         <div className="flex justify-between items-center mb-6">
           <div className="flex items-center gap-2">
@@ -319,7 +547,7 @@ const OwnerView = () => {
         </div>
 
         {isAdding && (
-          <form onSubmit={handleAdd} className="mb-8 p-4 bg-gray-50 rounded-lg grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+          <form onSubmit={handleAdd} className="mb-8 p-4 bg-gray-50 rounded-lg grid grid-cols-1 md:grid-cols-6 gap-4 items-end">
             <div>
               <label className="block text-sm font-medium mb-1">Nama Menu</label>
               <input 
@@ -364,7 +592,23 @@ const OwnerView = () => {
                 ))}
               </select>
             </div>
-            <div className="md:col-span-5">
+            <div>
+              <label className="block text-sm font-medium mb-1">Gambar</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0] || null
+                  const img = file ? await compressImageFile(file) : null
+                  setNewMenu({ ...newMenu, image: img })
+                }}
+                className="w-full p-2 border rounded bg-white"
+              />
+              {newMenu.image && (
+                <img src={newMenu.image} alt="preview" className="mt-2 w-12 h-12 rounded object-cover border" />
+              )}
+            </div>
+            <div className="md:col-span-6">
               <label className="block text-sm font-medium mb-1">Add-on Tersedia</label>
               {addOns.length === 0 ? (
                 <div className="p-2 border rounded bg-white text-sm text-gray-400">Buat add-on dulu</div>
@@ -383,7 +627,7 @@ const OwnerView = () => {
                 </div>
               )}
             </div>
-            <div className="flex gap-2 md:col-span-5">
+            <div className="flex gap-2 md:col-span-6">
               <button type="submit" className="flex-1 bg-green-600 text-white p-2 rounded hover:bg-green-700">Simpan</button>
               <button type="button" onClick={() => setIsAdding(false)} className="flex-1 bg-gray-400 text-white p-2 rounded hover:bg-gray-500">Batal</button>
             </div>
@@ -395,6 +639,7 @@ const OwnerView = () => {
             <thead>
               <tr className="border-b-2 border-gray-100">
                 <th className="py-3 px-4">Nama Menu</th>
+                <th className="py-3 px-4">Gambar</th>
                 <th className="py-3 px-4">Kategori</th>
                 <th className="py-3 px-4">Harga Jual</th>
                 <th className="py-3 px-4">HPP</th>
@@ -414,6 +659,31 @@ const OwnerView = () => {
                         className="w-full p-1 border rounded"
                       />
                     ) : menu.name}
+                  </td>
+                  <td className="py-3 px-4">
+                    {editingId === menu.id ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0] || null
+                            const img = file ? await compressImageFile(file) : null
+                            setEditForm({ ...editForm, image: img })
+                          }}
+                          className="w-full p-1 border rounded bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setEditForm({ ...editForm, image: null })}
+                          className="text-gray-500 hover:text-gray-700"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                    ) : (
+                      menu.image ? <img src={menu.image} alt={menu.name} className="w-10 h-10 rounded object-cover border" /> : <span className="text-sm text-gray-400">-</span>
+                    )}
                   </td>
                   <td className="py-3 px-4">
                     {editingId === menu.id ? (
@@ -489,13 +759,13 @@ const OwnerView = () => {
                     <div className="flex justify-end gap-2">
                       {editingId === menu.id ? (
                         <>
-                          <button onClick={() => handleUpdate(menu.id)} className="text-green-600 hover:text-green-800"><Save size={18} /></button>
+                          <button onClick={async () => { await handleUpdate(menu.id) }} className="text-green-600 hover:text-green-800"><Save size={18} /></button>
                           <button onClick={() => setEditingId(null)} className="text-gray-500 hover:text-gray-700"><X size={18} /></button>
                         </>
                       ) : (
                         <>
                           <button onClick={() => startEdit(menu)} className="text-blue-600 hover:text-blue-800"><Edit2 size={18} /></button>
-                          <button onClick={() => deleteMenu(menu.id)} className="text-red-600 hover:text-red-800"><Trash2 size={18} /></button>
+                          <button onClick={async () => { await deleteMenu(menu.id) }} className="text-red-600 hover:text-red-800"><Trash2 size={18} /></button>
                         </>
                       )}
                     </div>
@@ -506,6 +776,7 @@ const OwnerView = () => {
           </table>
         </div>
       </section>
+      )}
     </div>
   )
 }

@@ -135,7 +135,7 @@ const DashboardView = () => {
               filteredTransactions.slice(0, 5).map((t) => (
                 <div key={t.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-xl border border-gray-100">
                   <div>
-                    <p className="font-bold text-sm">Trans #{t.id.toString().slice(-6)}</p>
+                    <p className="font-bold text-sm">Trans #{t.publicId || t.id.toString().slice(-6)}</p>
                     <p className="text-xs text-gray-500">{new Date(t.date).toLocaleString('id-ID')}</p>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${t.paymentMethod === 'QRIS' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}`}>
                       {t.paymentMethod || 'N/A'}

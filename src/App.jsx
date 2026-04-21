@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from './store/useStore'
 import CashierView from './components/CashierView'
 import OwnerView from './components/OwnerView'
@@ -9,7 +9,7 @@ import ShiftHistoryView from './components/ShiftHistoryView'
 import { Store } from 'lucide-react'
 
 function App() {
-  const { currentUser, login, logout } = useStore()
+  const { currentUser, login, logout, init, isAuthLoading, isDataLoading } = useStore()
   const role = currentUser?.role || null
 
   const [username, setUsername] = useState('')
@@ -19,9 +19,13 @@ function App() {
   const [cashierTab, setCashierTab] = useState('pos') // 'pos' or 'transactions'
   const [ownerTab, setOwnerTab] = useState('dashboard') // 'dashboard' | 'transactions' | 'shift' | 'sold' | 'management'
 
-  const handleLogin = (e) => {
+  useEffect(() => {
+    init()
+  }, [init])
+
+  const handleLogin = async (e) => {
     e.preventDefault()
-    const ok = login(username, password)
+    const ok = await login(username, password)
     if (!ok) {
       setLoginError('Username atau password salah')
       return
@@ -31,6 +35,16 @@ function App() {
     setPassword('')
     setCashierTab('pos')
     setOwnerTab('dashboard')
+  }
+
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-sm font-bold text-gray-500">
+          Memuat...
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -55,7 +69,7 @@ function App() {
                 <p className="text-[10px] uppercase tracking-widest font-bold opacity-80">{currentUser.role === 'owner' ? 'Owner' : 'Kasir'}</p>
               </div>
               <button
-                onClick={logout}
+                onClick={() => logout()}
                 className="px-4 py-2 rounded-lg bg-red-800/50 hover:bg-red-700/50 font-bold"
               >
                 Logout
@@ -71,7 +85,7 @@ function App() {
         <main className="flex-1 p-6 md:p-8 flex items-center justify-center">
           <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-xl border border-gray-100">
             <h2 className="text-2xl font-black text-dimsum-dark">Login</h2>
-            <p className="text-sm text-gray-500 mt-1">Gunakan akun dummy kasir atau owner</p>
+            <p className="text-sm text-gray-500 mt-1">Gunakan akun kasir atau owner</p>
 
             <form onSubmit={handleLogin} className="mt-6 space-y-4">
               <div>
@@ -101,9 +115,10 @@ function App() {
               )}
               <button
                 type="submit"
-                className="w-full bg-dimsum-red text-white py-3 rounded-xl font-bold hover:bg-red-700 transition-all"
+                disabled={isDataLoading}
+                className="w-full bg-dimsum-red text-white py-3 rounded-xl font-bold hover:bg-red-700 transition-all disabled:bg-gray-300"
               >
-                Masuk
+                {isDataLoading ? 'Memuat...' : 'Masuk'}
               </button>
             </form>
           </div>
