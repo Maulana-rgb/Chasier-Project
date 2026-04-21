@@ -153,7 +153,7 @@ const TransactionsView = ({ mode }) => {
                   >
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                       <div>
-                        <p className="font-black text-dimsum-dark">Trans #{t.id.toString().slice(-6)}</p>
+                        <p className="font-black text-dimsum-dark">Trans #{t.publicId || t.id.toString().slice(-6)}</p>
                         <p className="text-xs text-gray-500">{new Date(t.date).toLocaleString('id-ID')}</p>
                         {t.customerName && (
                           <p className="text-xs font-medium text-dimsum-red mt-1">Pelanggan: {t.customerName}</p>

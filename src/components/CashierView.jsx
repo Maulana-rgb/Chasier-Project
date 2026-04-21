@@ -21,6 +21,10 @@ const CashierView = () => {
   const [openingBalance, setOpeningBalance] = useState('')
   const [showCloseShift, setShowCloseShift] = useState(false)
   const [closingCash, setClosingCash] = useState('')
+  const [closeShiftSummary, setCloseShiftSummary] = useState(null)
+
+  const toDigits = (value) => String(value || '').replace(/\D/g, '')
+  const formatIdr = (digits) => digits ? Number(digits).toLocaleString('id-ID') : ''
 
   const createLineId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`
 
@@ -189,7 +193,7 @@ const CashierView = () => {
     }).join('')
 
     const dateText = transaction.date ? new Date(transaction.date).toLocaleString('id-ID') : ''
-    const txNo = transaction.id ? String(transaction.id).slice(-6) : ''
+    const txNo = transaction.publicId || (transaction.id ? String(transaction.id).slice(-6) : '')
 
     return `
       <!doctype html>
@@ -300,7 +304,7 @@ const CashierView = () => {
     }
   }
 
-  const handleCheckout = () => {
+  const handleCheckout = async () => {
     if (cart.length === 0) return
     if (!paymentMethod) return
     if (!openShiftId) return
@@ -326,9 +330,8 @@ const CashierView = () => {
       shiftId: openShiftId,
     }
 
-    addTransaction(transaction)
-    const latest = useStore.getState().transactions.slice(-1)[0] || null
-    setReceiptTransaction(latest)
+    const created = await addTransaction(transaction)
+    setReceiptTransaction(created)
     setShowReceipt(true)
     setCart([])
     setPaymentMethod('')
@@ -376,9 +379,12 @@ const CashierView = () => {
               onClick={() => addToCart(menu)}
               className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 cursor-pointer hover:border-dimsum-red hover:shadow-md transition-all group"
             >
-              <div className="aspect-square bg-gray-100 rounded-lg mb-3 flex items-center justify-center text-gray-400">
-                {/* Placeholder image */}
-                <span className="text-xs">No Image</span>
+              <div className="aspect-square bg-gray-100 rounded-lg mb-3 flex items-center justify-center text-gray-400 overflow-hidden">
+                {menu.image ? (
+                  <img src={menu.image} alt={menu.name} className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-xs">No Image</span>
+                )}
               </div>
               <h4 className="font-bold text-dimsum-dark group-hover:text-dimsum-red">{menu.name}</h4>
               <p className="text-sm text-gray-500 mb-2">{menu.category}</p>
@@ -557,9 +563,10 @@ const CashierView = () => {
                   Uang Diterima (Rp)
                 </label>
                 <input 
-                  type="number" 
-                  value={cashAmount}
-                  onChange={(e) => setCashAmount(e.target.value)}
+                  type="text"
+                  inputMode="numeric"
+                  value={formatIdr(cashAmount)}
+                  onChange={(e) => setCashAmount(toDigits(e.target.value))}
                   placeholder="0"
                   className="w-full p-2 border rounded-lg text-lg font-mono outline-none focus:ring-2 focus:ring-dimsum-red"
                 />
@@ -606,7 +613,7 @@ const CashierView = () => {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-xl font-black text-dimsum-dark">Cetak Struk</h3>
-                  <p className="text-xs text-gray-500">Trans #{receiptTransaction.id.toString().slice(-6)} • {new Date(receiptTransaction.date).toLocaleString('id-ID')}</p>
+                  <p className="text-xs text-gray-500">Trans #{receiptTransaction.publicId || receiptTransaction.id.toString().slice(-6)} • {new Date(receiptTransaction.date).toLocaleString('id-ID')}</p>
                 </div>
                 <button
                   type="button"
@@ -739,9 +746,10 @@ const CashierView = () => {
               <div>
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">Saldo Awal (Rp)</label>
                 <input
-                  type="number"
-                  value={openingBalance}
-                  onChange={(e) => setOpeningBalance(e.target.value)}
+                  type="text"
+                  inputMode="numeric"
+                  value={formatIdr(openingBalance)}
+                  onChange={(e) => setOpeningBalance(toDigits(e.target.value))}
                   className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red font-mono"
                   placeholder="0"
                 />
@@ -749,8 +757,8 @@ const CashierView = () => {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    openShift(openingBalance)
+                  onClick={async () => {
+                    await openShift(openingBalance)
                     setOpeningBalance('')
                     setShowOpenShift(false)
                   }}
@@ -789,9 +797,10 @@ const CashierView = () => {
               <div>
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">Tunai Aktual (Rp)</label>
                 <input
-                  type="number"
-                  value={closingCash}
-                  onChange={(e) => setClosingCash(e.target.value)}
+                  type="text"
+                  inputMode="numeric"
+                  value={formatIdr(closingCash)}
+                  onChange={(e) => setClosingCash(toDigits(e.target.value))}
                   className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red font-mono"
                   placeholder="0"
                 />
@@ -800,10 +809,11 @@ const CashierView = () => {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    closeShift(closingCash)
+                  onClick={async () => {
+                    const summary = await closeShift(closingCash)
                     setClosingCash('')
                     setShowCloseShift(false)
+                    setCloseShiftSummary(summary)
                     setCart([])
                     setPaymentMethod('')
                     setCustomerName('')
@@ -824,6 +834,51 @@ const CashierView = () => {
                   Batal
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {closeShiftSummary && (
+        <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/50 animate-in fade-in duration-200 p-4">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div className="p-6 border-b">
+              <h3 className="text-xl font-black text-dimsum-dark">Detail Tutup Shift</h3>
+              <p className="text-xs text-gray-500 mt-1">Ringkasan hasil penutupan shift</p>
+            </div>
+            <div className="p-6 space-y-3">
+              <div className="p-4 rounded-xl border border-gray-100 bg-gray-50 space-y-2 text-sm">
+                <div className="flex justify-between text-gray-700">
+                  <span>Saldo Awal</span>
+                  <span className="font-mono">Rp {(closeShiftSummary.openingBalance || 0).toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between text-gray-700">
+                  <span>Penjualan Cash</span>
+                  <span className="font-mono">Rp {(closeShiftSummary.cashSales || 0).toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between text-gray-700">
+                  <span>Penjualan QRIS</span>
+                  <span className="font-mono">Rp {(closeShiftSummary.qrisSales || 0).toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between text-gray-700">
+                  <span>Saldo Aktual</span>
+                  <span className="font-mono">Rp {(closeShiftSummary.closingCash || 0).toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="font-bold text-dimsum-dark">Selisih</span>
+                  <span className={`font-mono font-bold ${Number(closeShiftSummary.difference || 0) === 0 ? 'text-green-700' : 'text-red-700'}`}>
+                    Rp {Number(closeShiftSummary.difference || 0).toLocaleString('id-ID')}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setCloseShiftSummary(null)}
+                className="w-full bg-dimsum-red text-white py-3 rounded-xl font-bold hover:bg-red-700 transition-all"
+              >
+                Selesai
+              </button>
             </div>
           </div>
         </div>
