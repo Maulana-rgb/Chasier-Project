@@ -58,7 +58,7 @@ function App() {
             </div>
             <div>
               <h1 className="text-2xl font-black tracking-tighter italic">DIMSUM DIMSAY</h1>
-              <p className="text-[10px] uppercase tracking-widest font-bold opacity-80">Premium Quality</p>
+              <p className="text-[10px] uppercase tracking-widest font-bold opacity-80">BY MAHIA</p>
             </div>
           </div>
 
@@ -95,7 +95,7 @@ function App() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red"
-                  placeholder="kasir / owner"
+                  placeholder="masukkan username"
                 />
               </div>
               <div>
@@ -105,7 +105,7 @@ function App() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red"
-                  placeholder="kasir123 / owner123"
+                  placeholder="masukkan password"
                 />
               </div>
               {loginError && (
@@ -199,7 +199,7 @@ function App() {
       {/* Footer */}
       <footer className="bg-dimsum-dark text-gray-500 p-8 text-center">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-          <p className="text-sm font-medium">&copy; 2024 Dimsum Kasir. Dibuat dengan cinta untuk UMKM Indonesia.</p>
+          <p className="text-sm font-medium">&copy; 2026 Dimsum Dimsay. Dibuat dengan cinta untuk UMKM Indonesia.</p>
           <div className="flex gap-6 text-xs uppercase tracking-widest font-bold">
             <span className="hover:text-white cursor-pointer transition-colors">Bantuan</span>
             <span className="hover:text-white cursor-pointer transition-colors">Kebijakan</span>
