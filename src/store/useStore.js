@@ -1,7 +1,15 @@
 import { create } from 'zustand'
 
+const API_BASE_URL = String(import.meta.env?.VITE_API_BASE_URL || '').replace(/\/$/, '')
+
 const apiRequest = async (path, { method = 'GET', body } = {}) => {
-  const res = await fetch(path, {
+  const url = typeof path === 'string' && /^https?:\/\//i.test(path)
+    ? path
+    : API_BASE_URL
+      ? `${API_BASE_URL}${path}`
+      : path
+
+  const res = await fetch(url, {
     method,
     credentials: 'include',
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
