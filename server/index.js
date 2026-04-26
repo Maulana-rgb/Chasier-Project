@@ -236,6 +236,8 @@ const ensureSchema = async () => {
     CREATE TABLE IF NOT EXISTS transactions (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       public_id VARCHAR(16) NULL,
+      coupon_code VARCHAR(32) NULL,
+      discount_amount INT NOT NULL DEFAULT 0,
       shift_id BIGINT NULL,
       date DATETIME NOT NULL,
       payment_method ENUM('Cash','QRIS') NOT NULL,
@@ -250,7 +252,46 @@ const ensureSchema = async () => {
   `)
 
   await addColumnIfMissing('transactions', 'public_id', '`public_id` VARCHAR(16) NULL')
+  await addColumnIfMissing('transactions', 'coupon_code', '`coupon_code` VARCHAR(32) NULL')
+  await addColumnIfMissing('transactions', 'discount_amount', '`discount_amount` INT NOT NULL DEFAULT 0')
   await addIndexIfMissing('transactions', 'uq_transactions_public_id', 'UNIQUE KEY uq_transactions_public_id (`public_id`)')
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS coupons (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(32) NOT NULL,
+      type ENUM('amount','percent') NOT NULL DEFAULT 'amount',
+      value INT NOT NULL DEFAULT 0,
+      active TINYINT(1) NOT NULL DEFAULT 1,
+      is_repeatable TINYINT(1) NOT NULL DEFAULT 0,
+      max_uses INT NOT NULL DEFAULT 1,
+      used_count INT NOT NULL DEFAULT 0,
+      valid_from DATETIME NULL,
+      valid_to DATETIME NULL,
+      used_at DATETIME NULL,
+      used_transaction_id BIGINT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_coupons_code (code),
+      CONSTRAINT fk_coupon_used_tx FOREIGN KEY (used_transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `)
+
+  await addColumnIfMissing('coupons', 'is_repeatable', '`is_repeatable` TINYINT(1) NOT NULL DEFAULT 0')
+  await addColumnIfMissing('coupons', 'max_uses', '`max_uses` INT NOT NULL DEFAULT 1')
+  await addColumnIfMissing('coupons', 'used_count', '`used_count` INT NOT NULL DEFAULT 0')
+
+  await pool.query(`
+    UPDATE coupons
+    SET
+      max_uses = CASE
+        WHEN max_uses IS NULL OR max_uses < 1 THEN 1
+        ELSE max_uses
+      END,
+      used_count = CASE
+        WHEN used_count IS NULL THEN CASE WHEN used_at IS NULL THEN 0 ELSE 1 END
+        ELSE used_count
+      END
+  `)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS transaction_items (
@@ -407,7 +448,7 @@ const getBootstrapData = async () => {
   }))
 
   const [txRows] = await pool.query(
-    `SELECT id, public_id, shift_id, date, payment_method, customer_name, subtotal, total, cash_amount, change_amount
+    `SELECT id, public_id, coupon_code, discount_amount, shift_id, date, payment_method, customer_name, subtotal, total, cash_amount, change_amount
      FROM transactions ORDER BY date DESC`
   )
 
@@ -472,6 +513,8 @@ const getBootstrapData = async () => {
     return {
       id: txId,
       publicId: r.public_id || null,
+      couponCode: r.coupon_code || null,
+      discountAmount: Number(r.discount_amount) || 0,
       shiftId: r.shift_id === null ? null : Number(r.shift_id),
       date: new Date(r.date).toISOString(),
       paymentMethod: r.payment_method,
@@ -604,6 +647,220 @@ app.post('/api/users/:id/reset-password', requireDb, requireOwner, async (req, r
   const passwordHash = await bcrypt.hash(tempPassword, 10)
   await pool.query('UPDATE users SET password_hash = :p WHERE id = :id', { id, p: passwordHash })
   res.json({ ok: true, tempPassword })
+})
+
+const normalizeCouponCode = (code) => String(code || '').trim().toUpperCase()
+
+const computeCouponDiscount = ({ type, value, subtotal }) => {
+  const st = Math.max(0, Number(subtotal) || 0)
+  const v = Math.max(0, Number(value) || 0)
+  if (st === 0) return 0
+  if (type === 'percent') {
+    const pct = Math.min(100, v)
+    return Math.min(st, Math.round((st * pct) / 100))
+  }
+  return Math.min(st, v)
+}
+
+app.get('/api/coupons', requireDb, requireOwner, async (req, res) => {
+  const [rows] = await pool.query(
+    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to, used_at, used_transaction_id, created_at
+     FROM coupons
+     ORDER BY created_at DESC, id DESC`
+  )
+  res.json({
+    coupons: rows.map(r => ({
+      id: Number(r.id),
+      code: r.code,
+      type: r.type,
+      value: Number(r.value) || 0,
+      active: Boolean(r.active),
+      isRepeatable: Boolean(r.is_repeatable),
+      maxUses: Number(r.max_uses) || 1,
+      usedCount: Number(r.used_count) || 0,
+      validFrom: r.valid_from ? new Date(r.valid_from).toISOString() : null,
+      validTo: r.valid_to ? new Date(r.valid_to).toISOString() : null,
+      usedAt: r.used_at ? new Date(r.used_at).toISOString() : null,
+      usedTransactionId: r.used_transaction_id === null ? null : Number(r.used_transaction_id),
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
+    })),
+  })
+})
+
+app.post('/api/coupons', requireDb, requireOwner, async (req, res) => {
+  const code = normalizeCouponCode(req.body?.code)
+  const type = String(req.body?.type || 'amount')
+  const value = Number(req.body?.value) || 0
+  const isRepeatable = Boolean(req.body?.isRepeatable ?? req.body?.repeatable ?? req.body?.is_repeatable)
+  const maxUsesRaw = req.body?.maxUses ?? req.body?.max_uses
+  const maxUses = isRepeatable ? (Number(maxUsesRaw) || 0) : 1
+  const active = req.body?.active === undefined ? 1 : (req.body?.active ? 1 : 0)
+
+  const validFromRaw = req.body?.validFrom ?? null
+  const validToRaw = req.body?.validTo ?? null
+  const validFrom = validFromRaw ? new Date(validFromRaw) : null
+  const validTo = validToRaw ? new Date(validToRaw) : null
+
+  if (!code) return res.status(400).json({ error: 'INVALID_INPUT' })
+  if (type !== 'amount' && type !== 'percent') return res.status(400).json({ error: 'INVALID_INPUT' })
+  if (!Number.isFinite(value) || value <= 0) return res.status(400).json({ error: 'INVALID_INPUT' })
+  if (type === 'percent' && (value < 1 || value > 100)) return res.status(400).json({ error: 'INVALID_INPUT' })
+  if (isRepeatable && (!Number.isFinite(maxUses) || maxUses < 1)) return res.status(400).json({ error: 'INVALID_INPUT' })
+  if ((validFromRaw && Number.isNaN(validFrom?.getTime())) || (validToRaw && Number.isNaN(validTo?.getTime()))) {
+    return res.status(400).json({ error: 'INVALID_INPUT' })
+  }
+  if (validFrom && validTo && validFrom > validTo) return res.status(400).json({ error: 'INVALID_INPUT' })
+
+  try {
+    await pool.query(
+      `INSERT INTO coupons (code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to)
+       VALUES (:c,:t,:v,:a,:ir,:mu,0,:vf,:vt)`,
+      {
+        c: code,
+        t: type,
+        v: Math.round(value),
+        a: active,
+        ir: isRepeatable ? 1 : 0,
+        mu: Math.max(1, Math.round(maxUses)),
+        vf: validFrom ? validFrom : null,
+        vt: validTo ? validTo : null,
+      }
+    )
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'COUPON_CODE_TAKEN' })
+    return res.status(500).json({ error: 'SERVER_ERROR' })
+  }
+
+  const [rows] = await pool.query(
+    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to, used_at, used_transaction_id, created_at
+     FROM coupons
+     ORDER BY created_at DESC, id DESC`
+  )
+  res.json({
+    coupons: rows.map(r => ({
+      id: Number(r.id),
+      code: r.code,
+      type: r.type,
+      value: Number(r.value) || 0,
+      active: Boolean(r.active),
+      isRepeatable: Boolean(r.is_repeatable),
+      maxUses: Number(r.max_uses) || 1,
+      usedCount: Number(r.used_count) || 0,
+      validFrom: r.valid_from ? new Date(r.valid_from).toISOString() : null,
+      validTo: r.valid_to ? new Date(r.valid_to).toISOString() : null,
+      usedAt: r.used_at ? new Date(r.used_at).toISOString() : null,
+      usedTransactionId: r.used_transaction_id === null ? null : Number(r.used_transaction_id),
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
+    })),
+  })
+})
+
+app.patch('/api/coupons/:id', requireDb, requireOwner, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!id) return res.status(400).json({ error: 'INVALID_INPUT' })
+
+  const active = req.body?.active === undefined ? undefined : (req.body?.active ? 1 : 0)
+  const isRepeatableRaw = req.body?.isRepeatable ?? req.body?.repeatable ?? req.body?.is_repeatable
+  const isRepeatable = isRepeatableRaw === undefined ? undefined : (isRepeatableRaw ? 1 : 0)
+  const maxUsesRaw = req.body?.maxUses ?? req.body?.max_uses
+  const maxUses = maxUsesRaw === undefined ? undefined : (Number(maxUsesRaw) || 0)
+  const validFromRaw = req.body?.validFrom ?? undefined
+  const validToRaw = req.body?.validTo ?? undefined
+  const validFrom = validFromRaw === undefined ? undefined : (validFromRaw ? new Date(validFromRaw) : null)
+  const validTo = validToRaw === undefined ? undefined : (validToRaw ? new Date(validToRaw) : null)
+
+  if (active === undefined && isRepeatableRaw === undefined && maxUsesRaw === undefined && validFromRaw === undefined && validToRaw === undefined) {
+    return res.status(400).json({ error: 'INVALID_INPUT' })
+  }
+  if (maxUsesRaw !== undefined && (!Number.isFinite(maxUses) || maxUses < 1)) return res.status(400).json({ error: 'INVALID_INPUT' })
+  if ((validFromRaw !== undefined && validFromRaw && Number.isNaN(validFrom?.getTime())) || (validToRaw !== undefined && validToRaw && Number.isNaN(validTo?.getTime()))) {
+    return res.status(400).json({ error: 'INVALID_INPUT' })
+  }
+
+  const [rows] = await pool.query('SELECT used_count FROM coupons WHERE id = :id LIMIT 1', { id })
+  if (!rows.length) return res.status(404).json({ error: 'NOT_FOUND' })
+  if (Number(rows[0].used_count) > 0 && (isRepeatable !== undefined || maxUses !== undefined)) {
+    return res.status(409).json({ error: 'COUPON_ALREADY_USED' })
+  }
+
+  const updates = []
+  const params = { id }
+  if (active !== undefined) {
+    updates.push('active = :a')
+    params.a = active
+  }
+  if (isRepeatable !== undefined) {
+    updates.push('is_repeatable = :ir')
+    params.ir = isRepeatable
+    if (!isRepeatable) {
+      updates.push('max_uses = 1')
+    }
+  }
+  if (maxUses !== undefined) {
+    updates.push('max_uses = :mu')
+    params.mu = Math.max(1, Math.round(maxUses))
+  }
+  if (validFromRaw !== undefined) {
+    updates.push('valid_from = :vf')
+    params.vf = validFrom === undefined ? null : validFrom
+  }
+  if (validToRaw !== undefined) {
+    updates.push('valid_to = :vt')
+    params.vt = validTo === undefined ? null : validTo
+  }
+  await pool.query(`UPDATE coupons SET ${updates.join(', ')} WHERE id = :id`, params)
+
+  const [list] = await pool.query(
+    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to, used_at, used_transaction_id, created_at
+     FROM coupons
+     ORDER BY created_at DESC, id DESC`
+  )
+  res.json({
+    coupons: list.map(r => ({
+      id: Number(r.id),
+      code: r.code,
+      type: r.type,
+      value: Number(r.value) || 0,
+      active: Boolean(r.active),
+      isRepeatable: Boolean(r.is_repeatable),
+      maxUses: Number(r.max_uses) || 1,
+      usedCount: Number(r.used_count) || 0,
+      validFrom: r.valid_from ? new Date(r.valid_from).toISOString() : null,
+      validTo: r.valid_to ? new Date(r.valid_to).toISOString() : null,
+      usedAt: r.used_at ? new Date(r.used_at).toISOString() : null,
+      usedTransactionId: r.used_transaction_id === null ? null : Number(r.used_transaction_id),
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
+    })),
+  })
+})
+
+app.post('/api/coupons/preview', requireDb, requireAuth, async (req, res) => {
+  const code = normalizeCouponCode(req.body?.code)
+  const subtotal = Math.max(0, Number(req.body?.subtotal) || 0)
+  if (!code) return res.status(400).json({ error: 'INVALID_INPUT' })
+
+  const [rows] = await pool.query(
+    `SELECT id, type, value, active, max_uses, used_count, valid_from, valid_to
+     FROM coupons
+     WHERE code = :c
+     LIMIT 1`,
+    { c: code }
+  )
+  if (!rows.length) return res.json({ valid: false, error: 'COUPON_NOT_FOUND' })
+
+  const c = rows[0]
+  if (!c.active) return res.json({ valid: false, error: 'COUPON_INACTIVE' })
+  const maxUses = Math.max(1, Number(c.max_uses) || 1)
+  const usedCount = Math.max(0, Number(c.used_count) || 0)
+  if (usedCount >= maxUses) return res.json({ valid: false, error: 'COUPON_USAGE_LIMIT' })
+
+  const now = Date.now()
+  if (c.valid_from && new Date(c.valid_from).getTime() > now) return res.json({ valid: false, error: 'COUPON_NOT_YET_VALID' })
+  if (c.valid_to && new Date(c.valid_to).getTime() < now) return res.json({ valid: false, error: 'COUPON_EXPIRED' })
+
+  const discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal })
+  const total = Math.max(0, subtotal - discountAmount)
+  res.json({ valid: true, code, discountAmount, total })
 })
 
 app.post('/api/categories', requireDb, requireOwner, async (req, res) => {
@@ -810,10 +1067,9 @@ app.post('/api/shifts/close', requireDb, requireAuth, async (req, res) => {
 app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
   const paymentMethod = String(req.body?.paymentMethod || '')
   const customerName = String(req.body?.customerName || '').trim()
-  const subtotal = Number(req.body?.subtotal) || 0
-  const total = Number(req.body?.total) || 0
-  const cashAmount = req.body?.cashAmount === '' || req.body?.cashAmount === null ? null : Number(req.body?.cashAmount) || 0
-  const changeAmount = req.body?.changeAmount === '' || req.body?.changeAmount === null ? null : Number(req.body?.changeAmount) || 0
+  const rawCouponCode = req.body?.couponCode === undefined ? req.body?.coupon_code : req.body?.couponCode
+  const couponCode = normalizeCouponCode(rawCouponCode)
+  const cashAmountInput = req.body?.cashAmount === '' || req.body?.cashAmount === null ? null : Number(req.body?.cashAmount) || 0
   const items = Array.isArray(req.body?.items) ? req.body.items : []
 
   if (paymentMethod !== 'Cash' && paymentMethod !== 'QRIS') return res.status(400).json({ error: 'INVALID_INPUT' })
@@ -821,6 +1077,16 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
 
   const shiftId = await getOpenShiftId()
   if (!shiftId) return res.status(409).json({ error: 'NO_OPEN_SHIFT' })
+
+  let subtotal = 0
+  for (const item of items) {
+    const price = Number(item?.price) || 0
+    const qty = Math.max(1, Number(item?.qty) || 1)
+    const addOns = Array.isArray(item?.addOns) ? item.addOns : []
+    const addOnTotal = addOns.reduce((sum, a) => sum + (Number(a?.price) || 0), 0)
+    subtotal += (price + addOnTotal) * qty
+  }
+  subtotal = Math.max(0, Math.round(subtotal))
 
   const conn = await pool.getConnection()
   try {
@@ -841,12 +1107,67 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
     const seq = Number(seqRow?.seq) || 1
     const publicId = `${ymd}-${String(seq).padStart(3, '0')}`
 
+    let discountAmount = 0
+    let appliedCouponId = null
+    if (couponCode) {
+      const [cRows] = await conn.query(
+        `SELECT id, type, value, active, max_uses, used_count, valid_from, valid_to
+         FROM coupons
+         WHERE code = :c
+         LIMIT 1
+         FOR UPDATE`,
+        { c: couponCode }
+      )
+      if (!cRows.length) throw { status: 409, error: 'COUPON_NOT_FOUND' }
+      const c = cRows[0]
+      if (!c.active) throw { status: 409, error: 'COUPON_INACTIVE' }
+      const maxUses = Math.max(1, Number(c.max_uses) || 1)
+      const usedCount = Math.max(0, Number(c.used_count) || 0)
+      if (usedCount >= maxUses) throw { status: 409, error: 'COUPON_USAGE_LIMIT' }
+      const now = Date.now()
+      if (c.valid_from && new Date(c.valid_from).getTime() > now) throw { status: 409, error: 'COUPON_NOT_YET_VALID' }
+      if (c.valid_to && new Date(c.valid_to).getTime() < now) throw { status: 409, error: 'COUPON_EXPIRED' }
+      discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal })
+      appliedCouponId = Number(c.id)
+    }
+
+    const total = Math.max(0, subtotal - discountAmount)
+    let cashAmount = null
+    let changeAmount = null
+    if (paymentMethod === 'Cash') {
+      cashAmount = cashAmountInput === null ? null : Math.max(0, Math.round(cashAmountInput))
+      if (cashAmount === null) throw { status: 400, error: 'INVALID_INPUT' }
+      if (cashAmount < total) throw { status: 400, error: 'CASH_INSUFFICIENT' }
+      changeAmount = cashAmount - total
+    }
+
     const [txResult] = await conn.query(
-      `INSERT INTO transactions (public_id, shift_id, date, payment_method, customer_name, subtotal, total, cash_amount, change_amount)
-       VALUES (:pid, :s, NOW(), :pm, :cn, :st, :t, :ca, :ch)`,
-      { pid: publicId, s: shiftId, pm: paymentMethod, cn: customerName || null, st: subtotal, t: total, ca: cashAmount, ch: changeAmount }
+      `INSERT INTO transactions (public_id, coupon_code, discount_amount, shift_id, date, payment_method, customer_name, subtotal, total, cash_amount, change_amount)
+       VALUES (:pid, :cc, :da, :s, NOW(), :pm, :cn, :st, :t, :ca, :ch)`,
+      {
+        pid: publicId,
+        cc: couponCode || null,
+        da: discountAmount,
+        s: shiftId,
+        pm: paymentMethod,
+        cn: customerName || null,
+        st: subtotal,
+        t: total,
+        ca: cashAmount,
+        ch: changeAmount,
+      }
     )
     const txId = Number(txResult.insertId)
+
+    if (appliedCouponId) {
+      const [result] = await conn.query(
+        `UPDATE coupons
+         SET used_count = used_count + 1, used_at = NOW(), used_transaction_id = :tx
+         WHERE id = :id AND used_count < max_uses`,
+        { id: appliedCouponId, tx: txId }
+      )
+      if (!result?.affectedRows) throw { status: 409, error: 'COUPON_USAGE_LIMIT' }
+    }
 
     for (const item of items) {
       const menuId = item?.menuId ? Number(item.menuId) : item?.id ? Number(item.id) : null
@@ -881,8 +1202,11 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
     await conn.commit()
     const data = await getBootstrapData()
     res.json({ ...data, createdTransactionId: txId })
-  } catch {
+  } catch (err) {
     await conn.rollback()
+    if (err && typeof err === 'object' && err.status && err.error) {
+      return res.status(Number(err.status)).json({ error: err.error })
+    }
     res.status(500).json({ error: 'SERVER_ERROR' })
   } finally {
     conn.release()

@@ -1,14 +1,15 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/useStore'
 import { ShoppingCart, Search, Trash2, CheckCircle } from 'lucide-react'
 
 const CashierView = () => {
   const { 
-    menus, addOns, categories, shifts, openShiftId, openShift, closeShift, addTransaction 
+    menus, addOns, categories, shifts, openShiftId, openShift, closeShift, addTransaction, previewCoupon
   } = useStore()
 
   const [cart, setCart] = useState([])
   const [selectedCategory, setSelectedCategory] = useState('Semua')
+  const [searchQuery, setSearchQuery] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('') // 'Cash' or 'QRIS'
   const [customerName, setCustomerName] = useState('')
   const [cashAmount, setCashAmount] = useState('')
@@ -22,6 +23,9 @@ const CashierView = () => {
   const [showCloseShift, setShowCloseShift] = useState(false)
   const [closingCash, setClosingCash] = useState('')
   const [closeShiftSummary, setCloseShiftSummary] = useState(null)
+  const [couponCode, setCouponCode] = useState('')
+  const [appliedCoupon, setAppliedCoupon] = useState(null)
+  const [couponError, setCouponError] = useState('')
 
   const toDigits = (value) => String(value || '').replace(/\D/g, '')
   const formatIdr = (digits) => digits ? Number(digits).toLocaleString('id-ID') : ''
@@ -32,9 +36,12 @@ const CashierView = () => {
     return (selectedAddOnIds || []).slice().sort((a, b) => a - b).join(',')
   }
 
-  const visibleMenus = selectedCategory === 'Semua'
-    ? menus
-    : menus.filter(m => m.category === selectedCategory)
+  const normalizedQuery = String(searchQuery || '').trim().toLowerCase()
+  const visibleMenus = menus.filter((m) => {
+    if (selectedCategory !== 'Semua' && m.category !== selectedCategory) return false
+    if (!normalizedQuery) return true
+    return String(m.name || '').toLowerCase().includes(normalizedQuery)
+  })
 
   const addToCart = (menu) => {
     const key = getAddOnKey([])
@@ -152,10 +159,56 @@ const CashierView = () => {
   }
 
   const subtotal = cart.reduce((acc, item) => acc + (getUnitPrice(item) * item.qty), 0)
-  const total = subtotal
+  const discountAmount = Math.max(0, Math.min(subtotal, Number(appliedCoupon?.discountAmount) || 0))
+  const total = Math.max(0, subtotal - discountAmount)
   const changeAmount = paymentMethod === 'Cash' && Number(cashAmount) > total ? Number(cashAmount) - total : 0
 
   const openShiftData = openShiftId ? (shifts || []).find(s => s.id === openShiftId) : null
+  const prevSubtotalRef = useRef(subtotal)
+
+  useEffect(() => {
+    const prevSubtotal = prevSubtotalRef.current
+    prevSubtotalRef.current = subtotal
+    if (!appliedCoupon) return
+    if (prevSubtotal === subtotal) return
+    setAppliedCoupon(null)
+    setCouponError('Kupon perlu di-apply ulang karena subtotal berubah.')
+  }, [subtotal, appliedCoupon])
+
+  const getCouponErrorText = (code) => {
+    const c = String(code || '')
+    if (c === 'COUPON_NOT_FOUND') return 'Kupon tidak ditemukan.'
+    if (c === 'COUPON_INACTIVE') return 'Kupon nonaktif.'
+    if (c === 'COUPON_USED') return 'Kupon sudah dipakai.'
+    if (c === 'COUPON_USAGE_LIMIT') return 'Kupon sudah mencapai batas pemakaian.'
+    if (c === 'COUPON_EXPIRED') return 'Kupon sudah expired.'
+    if (c === 'COUPON_NOT_YET_VALID') return 'Kupon belum berlaku.'
+    return 'Kupon tidak valid.'
+  }
+
+  const clearCoupon = () => {
+    setAppliedCoupon(null)
+    setCouponError('')
+    setCouponCode('')
+  }
+
+  const handleApplyCoupon = async () => {
+    const code = String(couponCode || '').trim()
+    if (!code) return
+    setCouponError('')
+    try {
+      const result = await previewCoupon({ code, subtotal })
+      if (result?.valid) {
+        setAppliedCoupon({ code: result.code, discountAmount: Number(result.discountAmount) || 0 })
+        return
+      }
+      setAppliedCoupon(null)
+      setCouponError(getCouponErrorText(result?.error))
+    } catch (err) {
+      setAppliedCoupon(null)
+      setCouponError(getCouponErrorText(err?.data?.error || err?.message))
+    }
+  }
 
   const escapeHtml = (value) => {
     return String(value)
@@ -172,11 +225,20 @@ const CashierView = () => {
 
   const getReceiptHtml = (transaction) => {
     const itemsHtml = (transaction.items || []).map((item) => {
-      const addOnTotal = getAddOnTotal(item.addOns)
-      const unit = (item.price || 0) + addOnTotal
-      const lineTotal = unit * (item.qty || 0)
-      const addOnsHtml = Array.isArray(item.addOns) && item.addOns.length > 0
-        ? `<div class="muted small" style="margin-top:4px;">${item.addOns.map(a => `${escapeHtml(a.name)} (+Rp ${Number(a.price || 0).toLocaleString('id-ID')})`).join(', ')}</div>`
+      const qty = Number(item.qty || 0)
+      const baseUnit = Number(item.price || 0)
+      const addOns = Array.isArray(item.addOns) ? item.addOns : []
+      const addOnUnitTotal = getAddOnTotal(addOns)
+      const lineTotal = (baseUnit + addOnUnitTotal) * qty
+      const addOnsHtml = addOns.length > 0
+        ? `<div class="muted small">${addOns.map(a => {
+            const unitPrice = Number(a?.price || 0)
+            const totalPrice = unitPrice * qty
+            const priceText = qty > 1
+              ? `+Rp ${unitPrice.toLocaleString('id-ID')} x ${qty} = Rp ${totalPrice.toLocaleString('id-ID')}`
+              : `+Rp ${unitPrice.toLocaleString('id-ID')}`
+            return `<div>${escapeHtml(a?.name || '')} (${priceText})</div>`
+          }).join('')}</div>`
         : ''
 
       return `
@@ -185,7 +247,7 @@ const CashierView = () => {
             <div class="bold">${escapeHtml(item.name)}</div>
             ${addOnsHtml}
           </div>
-          <div class="right mono">${Number(item.qty || 0)} x Rp ${Number(unit).toLocaleString('id-ID')}</div>
+          <div class="right mono">${qty} x Rp ${baseUnit.toLocaleString('id-ID')}</div>
         </div>
         <div class="right mono" style="margin-top:4px;">Rp ${Number(lineTotal).toLocaleString('id-ID')}</div>
         <div class="divider"></div>
@@ -214,14 +276,16 @@ const CashierView = () => {
             .divider { border-top: 1px dashed #bbb; margin: 10px 0; }
             .row { display: flex; gap: 12px; align-items: flex-start; }
             .totals { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; }
+            .logo { display: block; margin: 0 auto 6px; width: 70px; height: auto; }
             @media print { body { padding: 0; } .receipt { width: 80mm; } }
           </style>
         </head>
         <body>
           <div class="receipt">
             <div class="center">
+              <img class="logo" src="/receipt-logo.jpeg" alt="Dimsay" onerror="this.style.display='none'" />
               <div class="bold">DIMSUM DIMSAY</div>
-              <div class="small muted">Premium Quality</div>
+              <div class="small muted">By Mahia</div>
             </div>
             <div class="divider"></div>
             <div class="small">
@@ -234,6 +298,7 @@ const CashierView = () => {
             ${itemsHtml}
             <div class="totals small">
               <div class="muted">Subtotal</div><div class="mono right">Rp ${Number(transaction.subtotal || 0).toLocaleString('id-ID')}</div>
+              ${(Number(transaction.discountAmount || 0) > 0) ? `<div class="muted">Kupon${transaction.couponCode ? ` (${escapeHtml(transaction.couponCode)})` : ''}</div><div class="mono right">-Rp ${Number(transaction.discountAmount || 0).toLocaleString('id-ID')}</div>` : ''}
               <div class="bold">Total</div><div class="mono right bold">Rp ${Number(transaction.total || 0).toLocaleString('id-ID')}</div>
             </div>
             ${transaction.paymentMethod === 'Cash' ? `
@@ -244,7 +309,12 @@ const CashierView = () => {
             </div>
             ` : ''}
             <div class="divider"></div>
-            <div class="center small muted">Terima kasih</div>
+            <div class="center small muted">
+              <div>"Sekali Dimsay, Susah Move On" 😋</div>
+              <div>Makasih sudah jajan!</div>
+              <div>Follow us for more yum: @dimsumdimsay.bymahia</div>
+              <div>Whatsapp: 0822-7686-3616</div>
+            </div>
           </div>
         </body>
       </html>
@@ -323,6 +393,7 @@ const CashierView = () => {
       items: itemsForTransaction,
       subtotal,
       total,
+      couponCode: appliedCoupon?.code || '',
       paymentMethod,
       customerName,
       cashAmount: paymentMethod === 'Cash' ? Number(cashAmount) : 0,
@@ -337,6 +408,9 @@ const CashierView = () => {
     setPaymentMethod('')
     setCustomerName('')
     setCashAmount('')
+    setCouponCode('')
+    setAppliedCoupon(null)
+    setCouponError('')
     setExpandedItemId(null)
     setShowSuccess(true)
     setTimeout(() => setShowSuccess(false), 3000)
@@ -353,6 +427,8 @@ const CashierView = () => {
             <input 
               type="text" 
               placeholder="Cari menu..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-dimsum-red outline-none"
             />
           </div>
@@ -395,7 +471,7 @@ const CashierView = () => {
       </div>
 
       {/* Cart & Checkout */}
-      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex flex-col min-h-[500px]">
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 flex flex-col self-start">
         <div className="p-6 border-b space-y-4">
           <div className="flex items-center gap-2">
             <ShoppingCart className="text-dimsum-red" />
@@ -451,26 +527,24 @@ const CashierView = () => {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="overflow-y-auto p-6 space-y-4 max-h-[45vh]">
           {cart.length === 0 ? (
             <div className="text-center py-10 text-gray-400">
               <ShoppingCart size={48} className="mx-auto mb-2 opacity-20" />
               <p>Keranjang masih kosong</p>
             </div>
           ) : (
-            cart.map(item => (
+            cart.map(item => {
+              const selected = getSelectedAddOns(item.selectedAddOnIds || [])
+              const lineTotal = getUnitPrice(item) * item.qty
+              return (
               <div key={item.lineId} className="p-3 border border-gray-100 rounded-xl bg-white">
                 <div className="flex justify-between gap-3">
                   <div className="flex-1">
                     <p className="font-bold text-sm">{item.name}</p>
                     <p className="text-xs text-gray-500">
-                      Rp {getUnitPrice(item).toLocaleString()} / porsi
+                      Rp {Number(item.price || 0).toLocaleString()} / porsi
                     </p>
-                    {getSelectedAddOns(item.selectedAddOnIds || []).length > 0 && (
-                      <p className="text-[10px] text-gray-500 mt-1">
-                        {getSelectedAddOns(item.selectedAddOnIds || []).map(a => `${a.name} (+Rp ${a.price.toLocaleString()})`).join(', ')}
-                      </p>
-                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <div className="flex items-center border rounded-lg overflow-hidden">
@@ -493,9 +567,23 @@ const CashierView = () => {
                   >
                     Add-on
                   </button>
-                  <span className="text-xs font-mono text-gray-600">
-                    Rp {(getUnitPrice(item) * item.qty).toLocaleString()}
-                  </span>
+                  <div className="text-right">
+                    <div className="text-xs font-mono text-gray-600">
+                      Rp {Number(lineTotal).toLocaleString()}
+                    </div>
+                    {selected.length > 0 && (
+                      <div className="mt-1 space-y-0.5">
+                        {selected.map((a) => {
+                          const addOnTotal = Number(a.price || 0) * Number(item.qty || 0)
+                          return (
+                            <div key={a.id} className="text-[10px] text-gray-500 font-mono">
+                              +Rp {addOnTotal.toLocaleString()} {a.name}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {expandedItemId === item.lineId && (
@@ -524,7 +612,8 @@ const CashierView = () => {
                   </div>
                 )}
               </div>
-            ))
+              )
+            })
           )}
         </div>
 
@@ -533,9 +622,51 @@ const CashierView = () => {
             <span>Subtotal</span>
             <span>Rp {subtotal.toLocaleString()}</span>
           </div>
+          {discountAmount > 0 && (
+            <div className="flex justify-between text-gray-600">
+              <span>Diskon Kupon{appliedCoupon?.code ? ` (${appliedCoupon.code})` : ''}</span>
+              <span>-Rp {discountAmount.toLocaleString()}</span>
+            </div>
+          )}
           <div className="flex justify-between text-xl font-bold text-dimsum-dark pt-2 border-t border-gray-200">
             <span>Total</span>
             <span className="text-dimsum-red">Rp {total.toLocaleString()}</span>
+          </div>
+
+          <div className="pt-2 space-y-2">
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Kupon</p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={couponCode}
+                onChange={(e) => setCouponCode(e.target.value)}
+                placeholder="Masukkan kode kupon"
+                className="flex-1 p-2 border rounded-lg font-mono outline-none focus:ring-2 focus:ring-dimsum-red"
+              />
+              {appliedCoupon ? (
+                <button
+                  type="button"
+                  onClick={clearCoupon}
+                  className="px-4 rounded-lg border-2 border-gray-200 font-bold text-gray-600 hover:bg-gray-100"
+                >
+                  Hapus
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleApplyCoupon}
+                  disabled={!couponCode.trim() || cart.length === 0}
+                  className="px-4 rounded-lg border-2 border-dimsum-red font-bold text-dimsum-red hover:bg-red-50 disabled:border-gray-200 disabled:text-gray-300 disabled:hover:bg-transparent"
+                >
+                  Apply
+                </button>
+              )}
+            </div>
+            {couponError && (
+              <div className="text-xs font-bold text-red-600">
+                {couponError}
+              </div>
+            )}
           </div>
 
           <div className="pt-4 space-y-2">
@@ -637,6 +768,12 @@ const CashierView = () => {
                   <span>Subtotal</span>
                   <span className="font-mono">Rp {(receiptTransaction.subtotal || 0).toLocaleString()}</span>
                 </div>
+                {(receiptTransaction.discountAmount || 0) > 0 && (
+                  <div className="flex justify-between text-sm text-gray-600 mt-2">
+                    <span>Kupon{receiptTransaction.couponCode ? ` (${receiptTransaction.couponCode})` : ''}</span>
+                    <span className="font-mono">-Rp {(receiptTransaction.discountAmount || 0).toLocaleString()}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-lg font-black text-dimsum-dark pt-3 mt-3 border-t border-gray-200">
                   <span>Total</span>
                   <span className="text-dimsum-red font-mono">Rp {(receiptTransaction.total || 0).toLocaleString()}</span>
@@ -645,22 +782,36 @@ const CashierView = () => {
 
               <div className="space-y-3">
                 {(receiptTransaction.items || []).map((item, idx) => {
-                  const addOnTotal = getAddOnTotal(item.addOns)
-                  const unit = (item.price || 0) + addOnTotal
+                  const qty = Number(item.qty || 0)
+                  const baseUnit = Number(item.price || 0)
+                  const addOns = Array.isArray(item.addOns) ? item.addOns : []
+                  const addOnUnitTotal = getAddOnTotal(addOns)
+                  const lineTotal = (baseUnit + addOnUnitTotal) * qty
                   return (
                     <div key={`${receiptTransaction.id}-${idx}`} className="p-4 rounded-xl border border-gray-100">
                       <div className="flex justify-between gap-3">
                         <div className="flex-1">
                           <p className="font-bold text-sm text-dimsum-dark">{item.name}</p>
-                          {Array.isArray(item.addOns) && item.addOns.length > 0 && (
-                            <p className="text-[10px] text-gray-500 mt-1">
-                              {item.addOns.map(a => `${a.name} (+Rp ${a.price.toLocaleString()})`).join(', ')}
-                            </p>
-                          )}
                         </div>
                         <div className="text-right">
-                          <p className="text-xs text-gray-500 font-mono">{item.qty} x Rp {unit.toLocaleString()}</p>
-                          <p className="text-sm font-black text-dimsum-red font-mono mt-1">Rp {(unit * item.qty).toLocaleString()}</p>
+                          <p className="text-xs text-gray-500 font-mono">{qty} x Rp {baseUnit.toLocaleString()}</p>
+                          <p className="text-sm font-black text-dimsum-red font-mono mt-1">Rp {lineTotal.toLocaleString()}</p>
+                          {addOns.length > 0 && (
+                            <div className="mt-2 space-y-0.5">
+                              {addOns.map((a, aIdx) => {
+                                const unitPrice = Number(a?.price || 0)
+                                const totalPrice = unitPrice * qty
+                                const priceText = qty > 1
+                                  ? `+Rp ${unitPrice.toLocaleString()} x ${qty} = Rp ${totalPrice.toLocaleString()}`
+                                  : `+Rp ${unitPrice.toLocaleString()}`
+                                return (
+                                  <div key={`${receiptTransaction.id}-${idx}-${aIdx}`} className="text-[10px] text-gray-500 font-mono">
+                                    {a?.name} ({priceText})
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>

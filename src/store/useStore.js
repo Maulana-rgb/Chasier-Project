@@ -44,6 +44,7 @@ export const useStore = create((set, get) => ({
   shifts: [],
   openShiftId: null,
   users: [],
+  coupons: [],
 
   hydrateFromBootstrap: (data) => {
     set({
@@ -54,6 +55,7 @@ export const useStore = create((set, get) => ({
       shifts: data.shifts || [],
       openShiftId: data.openShiftId ?? null,
       users: data.users || [],
+      coupons: data.coupons || [],
     })
   },
 
@@ -72,6 +74,7 @@ export const useStore = create((set, get) => ({
           shifts: [],
           openShiftId: null,
           users: [],
+          coupons: [],
         })
         return
       }
@@ -91,6 +94,7 @@ export const useStore = create((set, get) => ({
         shifts: [],
         openShiftId: null,
         users: [],
+        coupons: [],
       })
     }
   },
@@ -123,6 +127,7 @@ export const useStore = create((set, get) => ({
       shifts: [],
       openShiftId: null,
       users: [],
+      coupons: [],
     })
   },
 
@@ -246,6 +251,7 @@ export const useStore = create((set, get) => ({
       customerName: String(transaction?.customerName || ''),
       subtotal: Number(transaction?.subtotal) || 0,
       total: Number(transaction?.total) || 0,
+      couponCode: String(transaction?.couponCode || ''),
       cashAmount: transaction?.cashAmount ?? null,
       changeAmount: transaction?.changeAmount ?? null,
       items: Array.isArray(transaction?.items) ? transaction.items : [],
@@ -277,5 +283,42 @@ export const useStore = create((set, get) => ({
     const body = password === undefined ? {} : { password }
     const data = await apiRequest(`/api/users/${encodeURIComponent(id)}/reset-password`, { method: 'POST', body })
     return data?.tempPassword || ''
+  },
+
+  fetchCoupons: async () => {
+    const data = await apiRequest('/api/coupons')
+    set({ coupons: data.coupons || [] })
+  },
+
+  createCoupon: async ({ code, type, value, active, validFrom, validTo, isRepeatable, maxUses }) => {
+    const payload = {
+      code: String(code || ''),
+      type: String(type || 'amount'),
+      value: Number(value) || 0,
+      active: active === undefined ? true : Boolean(active),
+      isRepeatable: Boolean(isRepeatable),
+      maxUses: maxUses === undefined ? undefined : Number(maxUses) || 0,
+      validFrom: validFrom ?? null,
+      validTo: validTo ?? null,
+    }
+    const data = await apiRequest('/api/coupons', { method: 'POST', body: payload })
+    set({ coupons: data.coupons || [] })
+  },
+
+  updateCoupon: async (id, patch) => {
+    const payload = {
+      active: patch?.active === undefined ? undefined : Boolean(patch.active),
+      isRepeatable: patch?.isRepeatable === undefined ? undefined : Boolean(patch.isRepeatable),
+      maxUses: patch?.maxUses === undefined ? undefined : Number(patch.maxUses) || 0,
+      validFrom: patch?.validFrom === undefined ? undefined : patch.validFrom,
+      validTo: patch?.validTo === undefined ? undefined : patch.validTo,
+    }
+    const data = await apiRequest(`/api/coupons/${encodeURIComponent(id)}`, { method: 'PATCH', body: payload })
+    set({ coupons: data.coupons || [] })
+  },
+
+  previewCoupon: async ({ code, subtotal }) => {
+    const payload = { code: String(code || ''), subtotal: Number(subtotal) || 0 }
+    return apiRequest('/api/coupons/preview', { method: 'POST', body: payload })
   },
 }))

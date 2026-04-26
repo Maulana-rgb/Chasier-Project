@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useStore } from '../store/useStore'
-import { TrendingUp, DollarSign, ShoppingBag, Calendar, Filter } from 'lucide-react'
+import { TrendingUp, DollarSign, ShoppingBag, Calendar, Filter, Tag } from 'lucide-react'
 
 const DashboardView = () => {
   const { transactions } = useStore()
@@ -40,6 +40,11 @@ const DashboardView = () => {
   const totalItemsSold = filteredTransactions.reduce((acc, t) => {
     return acc + (t.items || []).reduce((sum, item) => sum + (item.qty || 0), 0)
   }, 0)
+  const usedCouponsCount = filteredTransactions.filter(t => {
+    const code = String(t.couponCode || '').trim()
+    const discount = Number(t.discountAmount || 0)
+    return Boolean(code) && discount > 0
+  }).length
 
   // Top Selling Menu
   const itemCounts = {}
@@ -56,6 +61,7 @@ const DashboardView = () => {
     { label: 'Total Penjualan', value: `Rp ${totalRevenue.toLocaleString()}`, icon: DollarSign, color: 'bg-green-100 text-green-600' },
     { label: 'Jumlah Transaksi', value: totalTransactions, icon: TrendingUp, color: 'bg-blue-100 text-blue-600' },
     { label: 'Item Terjual', value: totalItemsSold, icon: ShoppingBag, color: 'bg-orange-100 text-orange-600' },
+    { label: 'Kupon Terpakai', value: usedCouponsCount, icon: Tag, color: 'bg-yellow-100 text-yellow-800' },
   ]
 
   return (

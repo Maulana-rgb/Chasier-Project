@@ -8,6 +8,7 @@ const OwnerView = () => {
     addOns, addAddOn, updateAddOn, deleteAddOn,
     categories, addCategory, updateCategory, deleteCategory,
     users, fetchUsers, createUser, updateUserPassword, resetUserPassword,
+    coupons, fetchCoupons, createCoupon, updateCoupon,
   } = useStore()
 
   const toDigits = (value) => String(value || '').replace(/\D/g, '')
@@ -69,14 +70,25 @@ const OwnerView = () => {
   const [newPasswordValue, setNewPasswordValue] = useState('')
   const [lastReset, setLastReset] = useState(null)
 
+  const [isAddingCoupon, setIsAddingCoupon] = useState(false)
+  const [newCoupon, setNewCoupon] = useState({ code: '', type: 'amount', value: '', isRepeatable: false, maxUses: '', validFrom: '', validTo: '' })
+  const [couponError, setCouponError] = useState('')
+
   const [activeTab, setActiveTab] = useState('menu')
 
   useEffect(() => {
-    if (activeTab !== 'user') return
-    fetchUsers().catch((err) => {
-      setUserError(err?.data?.error || err?.message || 'Gagal memuat user')
-    })
-  }, [activeTab, fetchUsers])
+    if (activeTab === 'user') {
+      fetchUsers().catch((err) => {
+        setUserError(err?.data?.error || err?.message || 'Gagal memuat user')
+      })
+      return
+    }
+    if (activeTab === 'coupon') {
+      fetchCoupons().catch((err) => {
+        setCouponError(err?.data?.error || err?.message || 'Gagal memuat kupon')
+      })
+    }
+  }, [activeTab, fetchUsers, fetchCoupons])
 
   const toggleIdInArray = (array, id) => {
     if (array.includes(id)) return array.filter(x => x !== id)
@@ -180,6 +192,32 @@ const OwnerView = () => {
     }
   }
 
+  const handleCreateCoupon = async (e) => {
+    e.preventDefault()
+    setCouponError('')
+    const code = String(newCoupon.code || '').trim()
+    const value = Number(String(newCoupon.value || '').replace(/\D/g, '')) || Number(newCoupon.value) || 0
+    const maxUses = Number(String(newCoupon.maxUses || '').replace(/\D/g, '')) || Number(newCoupon.maxUses) || 0
+    if (!code || !value) return
+    if (newCoupon.isRepeatable && maxUses < 1) return
+    try {
+      await createCoupon({
+        code,
+        type: newCoupon.type,
+        value,
+        active: true,
+        isRepeatable: Boolean(newCoupon.isRepeatable),
+        maxUses: newCoupon.isRepeatable ? maxUses : 1,
+        validFrom: newCoupon.validFrom ? newCoupon.validFrom : null,
+        validTo: newCoupon.validTo ? newCoupon.validTo : null,
+      })
+      setNewCoupon({ code: '', type: 'amount', value: '', isRepeatable: false, maxUses: '', validFrom: '', validTo: '' })
+      setIsAddingCoupon(false)
+    } catch (err) {
+      setCouponError(err?.data?.error || err?.message || 'Gagal membuat kupon')
+    }
+  }
+
   return (
     <div className="max-w-6xl mx-auto space-y-8">
       <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 flex flex-wrap gap-2">
@@ -206,12 +244,179 @@ const OwnerView = () => {
         </button>
         <button
           type="button"
+          onClick={() => { setActiveTab('coupon'); setCouponError('') }}
+          className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'coupon' ? 'bg-dimsum-red text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+        >
+          Kupon
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveTab('user')}
           className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'user' ? 'bg-dimsum-red text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
         >
           User
         </button>
       </div>
+
+      {activeTab === 'coupon' && (
+      <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-2">
+            <Menu className="text-dimsum-red" />
+            <h3 className="text-xl font-bold text-dimsum-dark">Manajemen Kupon</h3>
+          </div>
+          <button
+            onClick={() => { setIsAddingCoupon(true); setCouponError('') }}
+            className="bg-dimsum-red text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-red-700 transition-colors"
+          >
+            <Plus size={20} /> Tambah Kupon
+          </button>
+        </div>
+
+        {couponError && (
+          <div className="mb-4 p-3 rounded-xl bg-red-50 text-red-700 text-sm font-bold">
+            {couponError}
+          </div>
+        )}
+
+        {isAddingCoupon && (
+          <form onSubmit={handleCreateCoupon} className="mb-8 p-4 bg-gray-50 rounded-lg grid grid-cols-1 md:grid-cols-7 gap-4 items-end">
+            <div>
+              <label className="block text-sm font-medium mb-1">Kode</label>
+              <input
+                type="text"
+                value={newCoupon.code}
+                onChange={(e) => setNewCoupon({ ...newCoupon, code: e.target.value })}
+                className="w-full p-2 border rounded"
+                placeholder="misal: DISKON10"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Tipe</label>
+              <select
+                value={newCoupon.type}
+                onChange={(e) => setNewCoupon({ ...newCoupon, type: e.target.value })}
+                className="w-full p-2 border rounded"
+              >
+                <option value="amount">Potongan (Rp)</option>
+                <option value="percent">Persen (%)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Nilai</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={newCoupon.value}
+                onChange={(e) => setNewCoupon({ ...newCoupon, value: e.target.value })}
+                className="w-full p-2 border rounded"
+                placeholder={newCoupon.type === 'percent' ? '10' : '5000'}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Pemakaian</label>
+              <select
+                value={newCoupon.isRepeatable ? 'repeat' : 'once'}
+                onChange={(e) => setNewCoupon({ ...newCoupon, isRepeatable: e.target.value === 'repeat', maxUses: e.target.value === 'repeat' ? (newCoupon.maxUses || '2') : '' })}
+                className="w-full p-2 border rounded"
+              >
+                <option value="once">Sekali</option>
+                <option value="repeat">Berulang</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Batas Pakai</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                disabled={!newCoupon.isRepeatable}
+                value={newCoupon.maxUses}
+                onChange={(e) => setNewCoupon({ ...newCoupon, maxUses: e.target.value })}
+                className={`w-full p-2 border rounded ${newCoupon.isRepeatable ? '' : 'bg-gray-100 text-gray-500'}`}
+                placeholder={newCoupon.isRepeatable ? 'misal: 20' : '-'}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Mulai</label>
+              <input
+                type="datetime-local"
+                value={newCoupon.validFrom}
+                onChange={(e) => setNewCoupon({ ...newCoupon, validFrom: e.target.value })}
+                className="w-full p-2 border rounded"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Sampai</label>
+              <input
+                type="datetime-local"
+                value={newCoupon.validTo}
+                onChange={(e) => setNewCoupon({ ...newCoupon, validTo: e.target.value })}
+                className="w-full p-2 border rounded"
+              />
+            </div>
+            <div className="md:col-span-7 flex gap-2">
+              <button type="submit" className="flex-1 bg-dimsum-red text-white p-2 rounded hover:bg-red-700">Simpan</button>
+              <button type="button" onClick={() => setIsAddingCoupon(false)} className="flex-1 bg-gray-400 text-white p-2 rounded hover:bg-gray-500">Batal</button>
+            </div>
+          </form>
+        )}
+
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="py-3 px-4 text-left">Kode</th>
+                <th className="py-3 px-4 text-left">Tipe</th>
+                <th className="py-3 px-4 text-left">Nilai</th>
+                <th className="py-3 px-4 text-left">Pakai</th>
+                <th className="py-3 px-4 text-left">Mulai</th>
+                <th className="py-3 px-4 text-left">Sampai</th>
+                <th className="py-3 px-4 text-left">Status</th>
+                <th className="py-3 px-4 text-left">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {coupons.map(c => {
+                const now = Date.now()
+                const validFromMs = c.validFrom ? new Date(c.validFrom).getTime() : null
+                const validToMs = c.validTo ? new Date(c.validTo).getTime() : null
+                const expired = validToMs !== null && validToMs < now
+                const notYet = validFromMs !== null && validFromMs > now
+                const usedCount = Number(c.usedCount) || 0
+                const maxUses = Math.max(1, Number(c.maxUses) || 1)
+                const limitReached = usedCount >= maxUses
+                const status = limitReached ? (maxUses === 1 ? 'Sudah Dipakai' : 'Limit Habis') : expired ? 'Expired' : notYet ? 'Belum Aktif' : c.active ? 'Aktif' : 'Nonaktif'
+                return (
+                  <tr key={c.id} className="border-b">
+                    <td className="py-3 px-4 font-mono font-bold">{c.code}</td>
+                    <td className="py-3 px-4">{c.type === 'percent' ? 'Persen' : 'Potongan'}</td>
+                    <td className="py-3 px-4">
+                      {c.type === 'percent' ? `${c.value}%` : `Rp ${Number(c.value || 0).toLocaleString('id-ID')}`}
+                    </td>
+                    <td className="py-3 px-4">{`${usedCount}/${maxUses}`}</td>
+                    <td className="py-3 px-4">{c.validFrom ? new Date(c.validFrom).toLocaleString('id-ID') : '-'}</td>
+                    <td className="py-3 px-4">{c.validTo ? new Date(c.validTo).toLocaleString('id-ID') : '-'}</td>
+                    <td className="py-3 px-4">
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${status === 'Aktif' ? 'bg-green-50 text-green-700' : status === 'Sudah Dipakai' ? 'bg-gray-100 text-gray-700' : status === 'Expired' ? 'bg-red-50 text-red-700' : 'bg-yellow-50 text-yellow-800'}`}>
+                        {status}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">
+                      <button
+                        onClick={async () => { await updateCoupon(c.id, { active: !c.active }) }}
+                        className={`text-sm font-bold px-3 py-1 rounded ${c.active ? 'bg-gray-100 text-gray-700 hover:bg-gray-200' : 'bg-green-50 text-green-700 hover:bg-green-100'}`}
+                      >
+                        {c.active ? 'Nonaktifkan' : 'Aktifkan'}
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      )}
 
       {activeTab === 'user' && (
       <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
