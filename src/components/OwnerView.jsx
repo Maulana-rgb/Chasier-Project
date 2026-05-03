@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useStore } from '../store/useStore'
-import { Plus, Trash2, Edit2, Save, X, Utensils, Menu } from 'lucide-react'
+import { Plus, Trash2, Edit2, Save, X, Utensils, Menu, Receipt } from 'lucide-react'
 
 const OwnerView = () => {
   const { 
@@ -9,6 +9,8 @@ const OwnerView = () => {
     categories, addCategory, updateCategory, deleteCategory,
     users, fetchUsers, createUser, updateUserPassword, resetUserPassword,
     coupons, fetchCoupons, createCoupon, updateCoupon,
+    receiptSettings, updateReceiptSettings,
+    changeMyPassword,
   } = useStore()
 
   const toDigits = (value) => String(value || '').replace(/\D/g, '')
@@ -69,12 +71,19 @@ const OwnerView = () => {
   const [passwordEditUserId, setPasswordEditUserId] = useState(null)
   const [newPasswordValue, setNewPasswordValue] = useState('')
   const [lastReset, setLastReset] = useState(null)
+  const [ownerPasswordCurrent, setOwnerPasswordCurrent] = useState('')
+  const [ownerPasswordNew, setOwnerPasswordNew] = useState('')
+  const [ownerPasswordConfirm, setOwnerPasswordConfirm] = useState('')
+  const [ownerPasswordStatus, setOwnerPasswordStatus] = useState('')
 
   const [isAddingCoupon, setIsAddingCoupon] = useState(false)
   const [newCoupon, setNewCoupon] = useState({ code: '', type: 'amount', value: '', isRepeatable: false, maxUses: '', validFrom: '', validTo: '' })
   const [couponError, setCouponError] = useState('')
 
   const [activeTab, setActiveTab] = useState('menu')
+  const [receiptHeaderText, setReceiptHeaderText] = useState('')
+  const [receiptFooterText, setReceiptFooterText] = useState('')
+  const [receiptStatus, setReceiptStatus] = useState('')
 
   useEffect(() => {
     if (activeTab === 'user') {
@@ -88,7 +97,26 @@ const OwnerView = () => {
         setCouponError(err?.data?.error || err?.message || 'Gagal memuat kupon')
       })
     }
+    if (activeTab === 'receipt') {
+      setReceiptStatus('')
+    }
   }, [activeTab, fetchUsers, fetchCoupons])
+
+  useEffect(() => {
+    if (activeTab !== 'receipt') return
+    setReceiptHeaderText(String(receiptSettings?.headerText || ''))
+    setReceiptFooterText(String(receiptSettings?.footerText || ''))
+  }, [activeTab, receiptSettings])
+
+  const handleSaveReceipt = async () => {
+    setReceiptStatus('')
+    try {
+      await updateReceiptSettings({ headerText: receiptHeaderText, footerText: receiptFooterText })
+      setReceiptStatus('Tersimpan')
+    } catch (err) {
+      setReceiptStatus(err?.data?.error || err?.message || 'Gagal menyimpan')
+    }
+  }
 
   const toggleIdInArray = (array, id) => {
     if (array.includes(id)) return array.filter(x => x !== id)
@@ -192,6 +220,34 @@ const OwnerView = () => {
     }
   }
 
+  const getOwnerPasswordErrorText = (code) => {
+    const c = String(code || '')
+    if (c === 'INVALID_CREDENTIALS') return 'Password lama salah.'
+    if (c === 'PASSWORD_TOO_SHORT') return 'Password baru minimal 6 karakter.'
+    if (c === 'UNAUTHORIZED') return 'Sesi login tidak valid. Silakan login ulang.'
+    if (c === 'INVALID_INPUT') return 'Input tidak valid.'
+    return 'Gagal mengganti password.'
+  }
+
+  const handleChangeOwnerPassword = async (e) => {
+    e.preventDefault()
+    setOwnerPasswordStatus('')
+    if (!ownerPasswordCurrent || !ownerPasswordNew) return
+    if (ownerPasswordNew !== ownerPasswordConfirm) {
+      setOwnerPasswordStatus('Konfirmasi password baru tidak sama.')
+      return
+    }
+    try {
+      await changeMyPassword({ currentPassword: ownerPasswordCurrent, newPassword: ownerPasswordNew })
+      setOwnerPasswordCurrent('')
+      setOwnerPasswordNew('')
+      setOwnerPasswordConfirm('')
+      setOwnerPasswordStatus('Tersimpan')
+    } catch (err) {
+      setOwnerPasswordStatus(getOwnerPasswordErrorText(err?.data?.error || err?.message))
+    }
+  }
+
   const handleCreateCoupon = async (e) => {
     e.preventDefault()
     setCouponError('')
@@ -256,7 +312,65 @@ const OwnerView = () => {
         >
           User
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('receipt')}
+          className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'receipt' ? 'bg-dimsum-red text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+        >
+          Struk
+        </button>
       </div>
+
+      {activeTab === 'receipt' && (
+      <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-2">
+            <Receipt className="text-dimsum-red" />
+            <h3 className="text-xl font-bold text-dimsum-dark">Manajemen Struk</h3>
+          </div>
+          <button
+            type="button"
+            onClick={handleSaveReceipt}
+            className="bg-dimsum-red text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-red-700 transition-colors"
+          >
+            <Save size={20} /> Simpan
+          </button>
+        </div>
+
+        {receiptStatus && (
+          <div className={`mb-4 p-3 rounded-xl text-sm font-bold ${receiptStatus === 'Tersimpan' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            {receiptStatus}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+              Header Struk (tiap baris jadi 1 baris)
+            </label>
+            <textarea
+              value={receiptHeaderText}
+              onChange={(e) => setReceiptHeaderText(e.target.value)}
+              rows={8}
+              className="w-full p-3 border rounded-lg text-sm font-mono"
+              placeholder="Contoh:\nDIMSUM DIMSAY\nBy Mahia\nAlamat...\nWhatsapp..."
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+              Footer Struk (tiap baris jadi 1 baris)
+            </label>
+            <textarea
+              value={receiptFooterText}
+              onChange={(e) => setReceiptFooterText(e.target.value)}
+              rows={8}
+              className="w-full p-3 border rounded-lg text-sm font-mono"
+              placeholder='Contoh:\n"Terima kasih"\nInstagram...\nInfo lain...'
+            />
+          </div>
+        </div>
+      </section>
+      )}
 
       {activeTab === 'coupon' && (
       <section className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
@@ -431,6 +545,55 @@ const OwnerView = () => {
           >
             <Plus size={20} /> Tambah User
           </button>
+        </div>
+
+        <div className="mb-8 p-4 rounded-xl border border-gray-100 bg-gray-50">
+          <h4 className="font-black text-dimsum-dark mb-3">Ganti Password Owner</h4>
+          <form onSubmit={handleChangeOwnerPassword} className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Password Lama</label>
+              <input
+                type="password"
+                value={ownerPasswordCurrent}
+                onChange={(e) => setOwnerPasswordCurrent(e.target.value)}
+                className="w-full p-2 border rounded-lg"
+                placeholder="password lama"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Password Baru</label>
+              <input
+                type="password"
+                value={ownerPasswordNew}
+                onChange={(e) => setOwnerPasswordNew(e.target.value)}
+                className="w-full p-2 border rounded-lg"
+                placeholder="password baru"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Konfirmasi</label>
+              <input
+                type="password"
+                value={ownerPasswordConfirm}
+                onChange={(e) => setOwnerPasswordConfirm(e.target.value)}
+                className="w-full p-2 border rounded-lg"
+                placeholder="konfirmasi password"
+              />
+            </div>
+            <div className="md:col-span-3 flex items-center gap-2">
+              <button
+                type="submit"
+                className="bg-dimsum-dark text-white px-4 py-2 rounded-lg font-bold hover:bg-black"
+              >
+                Simpan Password
+              </button>
+              {ownerPasswordStatus && (
+                <div className={`text-sm font-bold ${ownerPasswordStatus === 'Tersimpan' ? 'text-green-700' : 'text-red-700'}`}>
+                  {ownerPasswordStatus}
+                </div>
+              )}
+            </div>
+          </form>
         </div>
 
         {userError && (

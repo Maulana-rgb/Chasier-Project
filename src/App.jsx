@@ -6,17 +6,44 @@ import DashboardView from './components/DashboardView'
 import TransactionsView from './components/TransactionsView'
 import SoldStockView from './components/SoldStockView'
 import ShiftHistoryView from './components/ShiftHistoryView'
-import { Store } from 'lucide-react'
+import { Eye, EyeOff, Maximize2, Minimize2, Store } from 'lucide-react'
 
 function App() {
-  const { currentUser, login, logout, init, isAuthLoading, isDataLoading } = useStore()
+  const { currentUser, login, logout, init, isAuthLoading, isDataLoading, openShiftId, shifts, pendingOrders } = useStore()
   const role = currentUser?.role || null
+  const isCashier = role === 'cashier'
+  const openShiftData = isCashier && openShiftId ? (shifts || []).find(s => Number(s.id) === Number(openShiftId)) : null
+  const pendingCount = (pendingOrders || []).length
 
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
-  const [cashierTab, setCashierTab] = useState('pos') // 'pos' or 'transactions'
+  const fullscreenSupported = Boolean(document?.documentElement?.requestFullscreen)
+
+  useEffect(() => {
+    const handler = () => setIsFullscreen(Boolean(document.fullscreenElement))
+    document.addEventListener('fullscreenchange', handler)
+    handler()
+    return () => document.removeEventListener('fullscreenchange', handler)
+  }, [])
+
+  const toggleFullscreen = async () => {
+    if (!fullscreenSupported) return
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen()
+        return
+      }
+      await document.documentElement.requestFullscreen()
+    } catch {
+      // ignore
+    }
+  }
+
+  const [cashierTab, setCashierTab] = useState('pos') // 'pos' | 'pending' | 'transactions'
   const [ownerTab, setOwnerTab] = useState('dashboard') // 'dashboard' | 'transactions' | 'shift' | 'sold' | 'management'
 
   useEffect(() => {
@@ -69,6 +96,38 @@ function App() {
                 <p className="text-[10px] uppercase tracking-widest font-bold opacity-80">{currentUser.role === 'owner' ? 'Owner' : 'Kasir'}</p>
               </div>
               <button
+                type="button"
+                onClick={toggleFullscreen}
+                disabled={!fullscreenSupported}
+                className="p-2 rounded-lg bg-red-800/50 hover:bg-red-700/50 disabled:opacity-50"
+                aria-label={isFullscreen ? 'Keluar fullscreen' : 'Masuk fullscreen'}
+                title={isFullscreen ? 'Keluar fullscreen' : 'Masuk fullscreen'}
+              >
+                {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+              </button>
+              {isCashier && (
+                <div className={`hidden sm:flex items-center px-3 py-2 rounded-lg font-bold text-xs ${openShiftData ? 'bg-emerald-500/20 text-white' : 'bg-white/15 text-white'}`}>
+                  <span className="uppercase tracking-widest text-[10px] opacity-90">Shift</span>
+                  <span className="mx-2 opacity-60">•</span>
+                  {openShiftData ? (
+                    <span>Aktif (Rp {(openShiftData.openingBalance || 0).toLocaleString('id-ID')})</span>
+                  ) : (
+                    <span>Belum dibuka</span>
+                  )}
+                </div>
+              )}
+              {isCashier && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.dispatchEvent(new Event(openShiftId ? 'cashier:closeShift' : 'cashier:openShift'))
+                  }}
+                  className={`px-4 py-2 rounded-lg font-bold ${openShiftId ? 'bg-dimsum-dark text-white hover:bg-black' : 'bg-white text-dimsum-red hover:bg-red-50'}`}
+                >
+                  {openShiftId ? 'Tutup Shift' : 'Buka Shift'}
+                </button>
+              )}
+              <button
                 onClick={() => logout()}
                 className="px-4 py-2 rounded-lg bg-red-800/50 hover:bg-red-700/50 font-bold"
               >
@@ -76,7 +135,19 @@ function App() {
               </button>
             </div>
           ) : (
-            <div className="text-xs font-bold opacity-80">Silakan login</div>
+            <div className="flex items-center gap-3">
+              <div className="text-xs font-bold opacity-80">Silakan login</div>
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                disabled={!fullscreenSupported}
+                className="p-2 rounded-lg bg-red-800/50 hover:bg-red-700/50 disabled:opacity-50"
+                aria-label={isFullscreen ? 'Keluar fullscreen' : 'Masuk fullscreen'}
+                title={isFullscreen ? 'Keluar fullscreen' : 'Masuk fullscreen'}
+              >
+                {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+              </button>
+            </div>
           )}
         </div>
       </nav>
@@ -100,13 +171,23 @@ function App() {
               </div>
               <div>
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red"
-                  placeholder="masukkan password"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full p-3 pr-12 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red"
+                    placeholder="masukkan password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                    aria-label={showPassword ? 'Sembunyikan password' : 'Lihat password'}
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
               </div>
               {loginError && (
                 <div className="p-3 rounded-xl bg-red-50 text-red-700 text-sm font-bold">
@@ -131,6 +212,17 @@ function App() {
               className={`py-4 font-bold border-b-2 transition-all ${cashierTab === 'pos' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Kasir
+            </button>
+            <button
+              onClick={() => setCashierTab('pending')}
+              className={`py-4 font-bold border-b-2 transition-all relative ${cashierTab === 'pending' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+            >
+              Pending
+              {pendingCount > 0 && (
+                <span className="absolute -top-1 -right-4 min-w-5 h-5 px-1.5 rounded-full bg-dimsum-red text-white text-[10px] font-black flex items-center justify-center">
+                  {pendingCount > 99 ? '99+' : pendingCount}
+                </span>
+              )}
             </button>
             <button
               onClick={() => setCashierTab('transactions')}
@@ -181,7 +273,9 @@ function App() {
       {currentUser && (
         <main className="flex-1 p-6 md:p-8">
           {role === 'cashier' ? (
-            cashierTab === 'pos' ? <CashierView /> : <TransactionsView mode="cashier" />
+            cashierTab === 'transactions'
+              ? <TransactionsView mode="cashier" />
+              : <CashierView view={cashierTab} />
           ) : (
             ownerTab === 'dashboard'
               ? <DashboardView />

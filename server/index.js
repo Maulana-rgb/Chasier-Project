@@ -155,6 +155,118 @@ const addIndexIfMissing = async (tableName, indexName, indexSql) => {
   await pool.query(`ALTER TABLE \`${tableName}\` ADD ${indexSql}`)
 }
 
+const recomputeShiftTotals = async (conn, shiftId) => {
+  const [[shiftRow]] = await conn.query(
+    'SELECT id, opening_balance, closing_cash, closed_at FROM shifts WHERE id = :id',
+    { id: shiftId }
+  )
+  if (!shiftRow) return
+
+  const [txRows] = await conn.query(
+    'SELECT payment_method, total FROM transactions WHERE shift_id = :id AND deleted_at IS NULL',
+    { id: shiftId }
+  )
+
+  const cashSales = txRows.filter(r => r.payment_method === 'Cash').reduce((acc, r) => acc + (Number(r.total) || 0), 0)
+  const qrisSales = txRows.filter(r => r.payment_method === 'QRIS').reduce((acc, r) => acc + (Number(r.total) || 0), 0)
+  const opening = Number(shiftRow.opening_balance) || 0
+  const expectedCash = opening + cashSales
+  const closingCash = shiftRow.closing_cash === null ? null : Number(shiftRow.closing_cash) || 0
+  const difference = closingCash === null ? 0 : (closingCash - expectedCash)
+
+  await conn.query(
+    `UPDATE shifts SET
+      cash_sales = :cs,
+      qris_sales = :qs,
+      expected_cash = :e,
+      difference = :d
+     WHERE id = :id`,
+    { id: shiftId, cs: cashSales, qs: qrisSales, e: expectedCash, d: difference }
+  )
+}
+
+const crc16ccitt = (str) => {
+  let crc = 0xffff
+  for (let i = 0; i < str.length; i++) {
+    crc ^= (str.charCodeAt(i) << 8)
+    for (let j = 0; j < 8; j++) {
+      if (crc & 0x8000) crc = ((crc << 1) ^ 0x1021) & 0xffff
+      else crc = (crc << 1) & 0xffff
+    }
+  }
+  return crc.toString(16).toUpperCase().padStart(4, '0')
+}
+
+const parseTlv = (payload) => {
+  const out = []
+  let i = 0
+  while (i + 4 <= payload.length) {
+    const tag = payload.slice(i, i + 2)
+    const lenStr = payload.slice(i + 2, i + 4)
+    const len = Number(lenStr)
+    if (!Number.isFinite(len) || len < 0) break
+    const start = i + 4
+    const end = start + len
+    if (end > payload.length) break
+    out.push({ tag, len, value: payload.slice(start, end) })
+    i = end
+  }
+  return out
+}
+
+const buildTlv = (items) => {
+  return items.map(({ tag, value }) => {
+    const v = String(value ?? '')
+    const len = String(v.length).padStart(2, '0')
+    return `${tag}${len}${v}`
+  }).join('')
+}
+
+const toDynamicQris = ({ payload, amount }) => {
+  const raw = String(payload || '').trim()
+  if (!raw) throw new Error('EMPTY_QRIS')
+
+  const withoutCrc = (() => {
+    const idx = raw.indexOf('6304')
+    if (idx === -1) return raw
+    return raw.slice(0, idx)
+  })()
+
+  const tlv = parseTlv(withoutCrc)
+  if (!tlv.length) throw new Error('INVALID_QRIS')
+
+  const next = []
+  let has01 = false
+  for (const item of tlv) {
+    if (item.tag === '01') {
+      next.push({ tag: '01', value: '12' })
+      has01 = true
+      continue
+    }
+    if (item.tag === '54') continue
+    if (item.tag === '63') continue
+    next.push({ tag: item.tag, value: item.value })
+  }
+
+  if (!has01) next.unshift({ tag: '01', value: '12' })
+
+  const amt = Number(amount)
+  if (!Number.isFinite(amt) || amt <= 0) throw new Error('INVALID_AMOUNT')
+  const amountStr = (Math.round(amt)).toString()
+
+  const idx58 = next.findIndex(x => x.tag === '58')
+  if (idx58 === -1) {
+    next.push({ tag: '54', value: amountStr })
+  } else {
+    next.splice(idx58, 0, { tag: '54', value: amountStr })
+  }
+
+  const body = buildTlv(next)
+  const toCrc = `${body}6304`
+  const crc = crc16ccitt(toCrc)
+  return `${toCrc}${crc}`
+}
+
 const ensureSchema = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -254,7 +366,55 @@ const ensureSchema = async () => {
   await addColumnIfMissing('transactions', 'public_id', '`public_id` VARCHAR(16) NULL')
   await addColumnIfMissing('transactions', 'coupon_code', '`coupon_code` VARCHAR(32) NULL')
   await addColumnIfMissing('transactions', 'discount_amount', '`discount_amount` INT NOT NULL DEFAULT 0')
+  await addColumnIfMissing('transactions', 'deleted_at', '`deleted_at` DATETIME NULL')
+  await addColumnIfMissing('transactions', 'deleted_by', '`deleted_by` BIGINT NULL')
   await addIndexIfMissing('transactions', 'uq_transactions_public_id', 'UNIQUE KEY uq_transactions_public_id (`public_id`)')
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      name VARCHAR(64) NOT NULL PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pending_orders (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      customer_name VARCHAR(128) NULL,
+      coupon_code VARCHAR(32) NULL,
+      discount_amount INT NOT NULL DEFAULT 0,
+      subtotal INT NOT NULL DEFAULT 0,
+      total INT NOT NULL DEFAULT 0
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pending_order_items (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      pending_order_id BIGINT NOT NULL,
+      menu_id INT NULL,
+      name VARCHAR(128) NOT NULL,
+      note VARCHAR(255) NULL,
+      price INT NOT NULL DEFAULT 0,
+      hpp INT NOT NULL DEFAULT 0,
+      qty INT NOT NULL DEFAULT 1,
+      CONSTRAINT fk_poi_po FOREIGN KEY (pending_order_id) REFERENCES pending_orders(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pending_order_item_addons (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      pending_order_item_id BIGINT NOT NULL,
+      add_on_id INT NULL,
+      name VARCHAR(128) NOT NULL,
+      price INT NOT NULL DEFAULT 0,
+      hpp INT NOT NULL DEFAULT 0,
+      CONSTRAINT fk_poa_item FOREIGN KEY (pending_order_item_id) REFERENCES pending_order_items(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `)
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS coupons (
@@ -299,12 +459,15 @@ const ensureSchema = async () => {
       transaction_id BIGINT NOT NULL,
       menu_id INT NULL,
       name VARCHAR(128) NOT NULL,
+      note VARCHAR(255) NULL,
       price INT NOT NULL DEFAULT 0,
       hpp INT NOT NULL DEFAULT 0,
       qty INT NOT NULL DEFAULT 1,
       CONSTRAINT fk_ti_tx FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `)
+
+  await addColumnIfMissing('transaction_items', 'note', '`note` VARCHAR(255) NULL')
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS transaction_item_addons (
@@ -386,11 +549,107 @@ const seedIfEmpty = async () => {
       }
     )
   }
+
+  const defaultReceiptHeader = [
+    'DIMSUM DIMSAY',
+    'By Mahia',
+    'Depan Apotek Aulia Farma, Jalinsum Medan-Kisaran Kebon Kopi, Tanjunggading',
+    'Whatsapp: 0822-7686-3616',
+  ].join('\n')
+  const defaultReceiptFooter = [
+    '"Sekali Dimsay, Susah Move On" 😋',
+    'Makasih sudah jajan!',
+    'Follow us for more yum: @dimsumdimsay.bymahia',
+  ].join('\n')
+  const defaultQrisStatic = '00020101021126650013ID.CO.BTN.WWW011893600200155812001602154301185581200160303UMI51440014ID.CO.QRIS.WWW0215ID10254326341170303UMI5204581253033605802ID5923DIMSUM DIMSAY BY MAHIA.6009BATU BARA61052125762070703A0163045290'
+
+  await pool.query(
+    `INSERT IGNORE INTO settings (name, value)
+     VALUES (:hName, :hVal), (:fName, :fVal), (:qName, :qVal)`,
+    { hName: 'receipt_header', hVal: defaultReceiptHeader, fName: 'receipt_footer', fVal: defaultReceiptFooter, qName: 'qris_static', qVal: defaultQrisStatic }
+  )
 }
 
 const getOpenShiftId = async () => {
   const [rows] = await pool.query('SELECT id FROM shifts WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1')
   return rows.length ? Number(rows[0].id) : null
+}
+
+const getPendingOrdersData = async () => {
+  const [pendingRows] = await pool.query(
+    `SELECT id, created_at, customer_name, coupon_code, discount_amount, subtotal, total
+     FROM pending_orders
+     ORDER BY created_at DESC`
+  )
+  const pendingIds = pendingRows.map(r => Number(r.id))
+  let itemsByPending = new Map()
+  let addOnsByPendingItem = new Map()
+  if (pendingIds.length) {
+    const [pItemRows] = await pool.query(
+      `SELECT id, pending_order_id, menu_id, name, note, price, hpp, qty
+       FROM pending_order_items
+       WHERE pending_order_id IN (${pendingIds.map(() => '?').join(',')})
+       ORDER BY id ASC`,
+      pendingIds
+    )
+    const pItemIds = pItemRows.map(r => Number(r.id))
+    itemsByPending = new Map()
+    pItemRows.forEach(r => {
+      const pid = Number(r.pending_order_id)
+      const prev = itemsByPending.get(pid) || []
+      prev.push({
+        id: Number(r.id),
+        menuId: r.menu_id === null ? null : Number(r.menu_id),
+        name: r.name,
+        note: r.note === null ? '' : String(r.note || ''),
+        price: Number(r.price) || 0,
+        hpp: Number(r.hpp) || 0,
+        qty: Number(r.qty) || 0,
+        addOns: [],
+      })
+      itemsByPending.set(pid, prev)
+    })
+
+    if (pItemIds.length) {
+      const [pAddonRows] = await pool.query(
+        `SELECT pending_order_item_id, add_on_id, name, price, hpp
+         FROM pending_order_item_addons
+         WHERE pending_order_item_id IN (${pItemIds.map(() => '?').join(',')})
+         ORDER BY id ASC`,
+        pItemIds
+      )
+      addOnsByPendingItem = new Map()
+      pAddonRows.forEach(r => {
+        const itemId = Number(r.pending_order_item_id)
+        const prev = addOnsByPendingItem.get(itemId) || []
+        prev.push({
+          id: r.add_on_id === null ? null : Number(r.add_on_id),
+          name: r.name,
+          price: Number(r.price) || 0,
+          hpp: Number(r.hpp) || 0,
+        })
+        addOnsByPendingItem.set(itemId, prev)
+      })
+    }
+  }
+
+  return pendingRows.map(r => {
+    const pid = Number(r.id)
+    const items = (itemsByPending.get(pid) || []).map(i => ({
+      ...i,
+      addOns: addOnsByPendingItem.get(i.id) || [],
+    }))
+    return {
+      id: pid,
+      createdAt: new Date(r.created_at).toISOString(),
+      customerName: r.customer_name || '',
+      couponCode: r.coupon_code || null,
+      discountAmount: Number(r.discount_amount) || 0,
+      subtotal: Number(r.subtotal) || 0,
+      total: Number(r.total) || 0,
+      items,
+    }
+  })
 }
 
 const getBootstrapData = async () => {
@@ -449,7 +708,9 @@ const getBootstrapData = async () => {
 
   const [txRows] = await pool.query(
     `SELECT id, public_id, coupon_code, discount_amount, shift_id, date, payment_method, customer_name, subtotal, total, cash_amount, change_amount
-     FROM transactions ORDER BY date DESC`
+     FROM transactions
+     WHERE deleted_at IS NULL
+     ORDER BY date DESC`
   )
 
   const txIds = txRows.map(r => Number(r.id))
@@ -457,7 +718,7 @@ const getBootstrapData = async () => {
   let addOnsByItem = new Map()
   if (txIds.length) {
     const [itemRows] = await pool.query(
-      `SELECT id, transaction_id, menu_id, name, price, hpp, qty
+      `SELECT id, transaction_id, menu_id, name, note, price, hpp, qty
        FROM transaction_items
        WHERE transaction_id IN (${txIds.map(() => '?').join(',')})
        ORDER BY id ASC`,
@@ -473,6 +734,7 @@ const getBootstrapData = async () => {
         id: Number(r.id),
         menuId: r.menu_id === null ? null : Number(r.menu_id),
         name: r.name,
+        note: r.note === null ? '' : String(r.note || ''),
         price: Number(r.price) || 0,
         hpp: Number(r.hpp) || 0,
         qty: Number(r.qty) || 0,
@@ -528,7 +790,20 @@ const getBootstrapData = async () => {
   })
 
   const openShiftId = await getOpenShiftId()
-  return { categories, menus, addOns, shifts, openShiftId, transactions }
+  const pendingOrders = await getPendingOrdersData()
+
+  const [settingsRows] = await pool.query(
+    `SELECT name, value
+     FROM settings
+     WHERE name IN ('receipt_header','receipt_footer')`
+  )
+  const settingsByName = Object.fromEntries(settingsRows.map(r => [r.name, String(r.value || '')]))
+  const receiptSettings = {
+    headerText: settingsByName.receipt_header || '',
+    footerText: settingsByName.receipt_footer || '',
+  }
+
+  return { categories, menus, addOns, shifts, openShiftId, transactions, receiptSettings, pendingOrders }
 }
 
 app.get('/api/health', async (req, res) => {
@@ -573,6 +848,26 @@ app.post('/api/auth/logout', (req, res) => {
   req.session?.destroy(() => {
     res.json({ ok: true })
   })
+})
+
+app.patch('/api/auth/password', requireDb, requireAuth, async (req, res) => {
+  const userId = req.session?.user?.id ? Number(req.session.user.id) : null
+  if (!userId) return res.status(401).json({ error: 'UNAUTHORIZED' })
+
+  const currentPassword = String(req.body?.currentPassword || '')
+  const newPassword = String(req.body?.newPassword || '')
+  if (!currentPassword || !newPassword) return res.status(400).json({ error: 'INVALID_INPUT' })
+  if (newPassword.length < 6) return res.status(400).json({ error: 'PASSWORD_TOO_SHORT' })
+
+  const [rows] = await pool.query('SELECT password_hash FROM users WHERE id = :id LIMIT 1', { id: userId })
+  if (!rows.length) return res.status(401).json({ error: 'UNAUTHORIZED' })
+
+  const ok = await bcrypt.compare(currentPassword, rows[0].password_hash)
+  if (!ok) return res.status(401).json({ error: 'INVALID_CREDENTIALS' })
+
+  const passwordHash = await bcrypt.hash(newPassword, 10)
+  await pool.query('UPDATE users SET password_hash = :p WHERE id = :id', { id: userId, p: passwordHash })
+  res.json({ ok: true })
 })
 
 app.get('/api/bootstrap', requireDb, requireAuth, async (req, res) => {
@@ -1038,7 +1333,7 @@ app.post('/api/shifts/close', requireDb, requireAuth, async (req, res) => {
   if (!shiftId) return res.status(409).json({ error: 'NO_OPEN_SHIFT' })
 
   const [txRows] = await pool.query(
-    'SELECT payment_method, total FROM transactions WHERE shift_id = :id',
+    'SELECT payment_method, total FROM transactions WHERE shift_id = :id AND deleted_at IS NULL',
     { id: shiftId }
   )
   const cashSales = txRows.filter(r => r.payment_method === 'Cash').reduce((acc, r) => acc + (Number(r.total) || 0), 0)
@@ -1069,6 +1364,7 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
   const customerName = String(req.body?.customerName || '').trim()
   const rawCouponCode = req.body?.couponCode === undefined ? req.body?.coupon_code : req.body?.couponCode
   const couponCode = normalizeCouponCode(rawCouponCode)
+  const pendingOrderId = req.body?.pendingOrderId === undefined ? null : Number(req.body?.pendingOrderId)
   const cashAmountInput = req.body?.cashAmount === '' || req.body?.cashAmount === null ? null : Number(req.body?.cashAmount) || 0
   const items = Array.isArray(req.body?.items) ? req.body.items : []
 
@@ -1172,15 +1468,16 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
     for (const item of items) {
       const menuId = item?.menuId ? Number(item.menuId) : item?.id ? Number(item.id) : null
       const name = String(item?.name || '').trim()
+      const note = String(item?.note || '').trim()
       const price = Number(item?.price) || 0
       const hpp = Number(item?.hpp) || 0
       const qty = Math.max(1, Number(item?.qty) || 1)
       if (!name) continue
 
       const [itemResult] = await conn.query(
-        `INSERT INTO transaction_items (transaction_id, menu_id, name, price, hpp, qty)
-         VALUES (:tx, :mid, :n, :p, :h, :q)`,
-        { tx: txId, mid: menuId, n: name, p: price, h: hpp, q: qty }
+        `INSERT INTO transaction_items (transaction_id, menu_id, name, note, price, hpp, qty)
+         VALUES (:tx, :mid, :n, :no, :p, :h, :q)`,
+        { tx: txId, mid: menuId, n: name, no: note || null, p: price, h: hpp, q: qty }
       )
       const itemId = Number(itemResult.insertId)
 
@@ -1199,6 +1496,10 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
       }
     }
 
+    if (pendingOrderId) {
+      await conn.query('DELETE FROM pending_orders WHERE id = :id', { id: pendingOrderId })
+    }
+
     await conn.commit()
     const data = await getBootstrapData()
     res.json({ ...data, createdTransactionId: txId })
@@ -1211,6 +1512,226 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
   } finally {
     conn.release()
   }
+})
+
+app.patch('/api/transactions/:id/delete', requireDb, requireOwner, async (req, res) => {
+  const txId = Number(req.params.id)
+  if (!txId) return res.status(400).json({ error: 'INVALID_INPUT' })
+
+  const actorId = req.session?.user?.id ? Number(req.session.user.id) : null
+  if (!actorId) return res.status(401).json({ error: 'UNAUTHORIZED' })
+
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    const [rows] = await conn.query(
+      `SELECT id, shift_id, coupon_code, discount_amount, deleted_at
+       FROM transactions
+       WHERE id = :id
+       LIMIT 1
+       FOR UPDATE`,
+      { id: txId }
+    )
+    if (!rows.length) throw { status: 404, error: 'NOT_FOUND' }
+    const tx = rows[0]
+    if (tx.deleted_at) throw { status: 409, error: 'ALREADY_DELETED' }
+
+    await conn.query(
+      'UPDATE transactions SET deleted_at = NOW(), deleted_by = :by WHERE id = :id',
+      { id: txId, by: actorId }
+    )
+
+    const couponCode = normalizeCouponCode(tx.coupon_code)
+    const discountAmount = Number(tx.discount_amount) || 0
+    if (couponCode && discountAmount > 0) {
+      await conn.query(
+        `UPDATE coupons
+         SET
+           used_count = CASE WHEN used_count > 0 THEN used_count - 1 ELSE 0 END,
+           used_transaction_id = CASE WHEN used_transaction_id = :tx THEN NULL ELSE used_transaction_id END,
+           used_at = CASE WHEN used_transaction_id = :tx THEN NULL ELSE used_at END
+         WHERE code = :c`,
+        { tx: txId, c: couponCode }
+      )
+    }
+
+    const shiftId = tx.shift_id === null ? null : Number(tx.shift_id)
+    if (shiftId) {
+      await recomputeShiftTotals(conn, shiftId)
+    }
+
+    await conn.commit()
+    const data = await getBootstrapData()
+    res.json({ ...data, deletedTransactionId: txId })
+  } catch (err) {
+    await conn.rollback()
+    if (err && typeof err === 'object' && err.status && err.error) {
+      return res.status(Number(err.status)).json({ error: err.error })
+    }
+    res.status(500).json({ error: 'SERVER_ERROR' })
+  } finally {
+    conn.release()
+  }
+})
+
+app.get('/api/settings/receipt', requireDb, requireOwner, async (req, res) => {
+  const [rows] = await pool.query(
+    `SELECT name, value
+     FROM settings
+     WHERE name IN ('receipt_header','receipt_footer')`
+  )
+  const byName = Object.fromEntries(rows.map(r => [r.name, String(r.value || '')]))
+  res.json({
+    receiptSettings: {
+      headerText: byName.receipt_header || '',
+      footerText: byName.receipt_footer || '',
+    },
+  })
+})
+
+app.patch('/api/settings/receipt', requireDb, requireOwner, async (req, res) => {
+  const headerText = String(req.body?.headerText ?? '').replace(/\r\n/g, '\n')
+  const footerText = String(req.body?.footerText ?? '').replace(/\r\n/g, '\n')
+
+  await pool.query(
+    `INSERT INTO settings (name, value) VALUES ('receipt_header', :h)
+     ON DUPLICATE KEY UPDATE value = :h`,
+    { h: headerText }
+  )
+  await pool.query(
+    `INSERT INTO settings (name, value) VALUES ('receipt_footer', :f)
+     ON DUPLICATE KEY UPDATE value = :f`,
+    { f: footerText }
+  )
+
+  const data = await getBootstrapData()
+  res.json(data)
+})
+
+app.post('/api/qris/dynamic', requireDb, requireAuth, async (req, res) => {
+  const amount = Number(req.body?.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'INVALID_INPUT' })
+
+  const [[row]] = await pool.query(`SELECT value FROM settings WHERE name = 'qris_static' LIMIT 1`)
+  const qrisStatic = String(row?.value || '').trim()
+  if (!qrisStatic) return res.status(500).json({ error: 'QRIS_NOT_CONFIGURED' })
+
+  try {
+    const qris = toDynamicQris({ payload: qrisStatic, amount })
+    res.json({ qris })
+  } catch (err) {
+    res.status(400).json({ error: err?.message || 'INVALID_INPUT' })
+  }
+})
+
+app.post('/api/pending-orders', requireDb, requireAuth, async (req, res) => {
+  const customerName = String(req.body?.customerName || '').trim()
+  const rawCouponCode = req.body?.couponCode === undefined ? req.body?.coupon_code : req.body?.couponCode
+  const couponCode = normalizeCouponCode(rawCouponCode)
+  const items = Array.isArray(req.body?.items) ? req.body.items : []
+  if (!items.length) return res.status(400).json({ error: 'EMPTY_ITEMS' })
+
+  let subtotal = 0
+  for (const item of items) {
+    const price = Number(item?.price) || 0
+    const qty = Math.max(1, Number(item?.qty) || 1)
+    const addOns = Array.isArray(item?.addOns) ? item.addOns : []
+    const addOnTotal = addOns.reduce((sum, a) => sum + (Number(a?.price) || 0), 0)
+    subtotal += (price + addOnTotal) * qty
+  }
+  subtotal = Math.max(0, Math.round(subtotal))
+
+  let discountAmount = 0
+  if (couponCode) {
+    const [rows] = await pool.query(
+      `SELECT id, type, value, active, max_uses, used_count, valid_from, valid_to
+       FROM coupons
+       WHERE code = :c
+       LIMIT 1`,
+      { c: couponCode }
+    )
+    if (!rows.length) return res.status(409).json({ error: 'COUPON_NOT_FOUND' })
+    const c = rows[0]
+    if (!c.active) return res.status(409).json({ error: 'COUPON_INACTIVE' })
+    const maxUses = Math.max(1, Number(c.max_uses) || 1)
+    const usedCount = Math.max(0, Number(c.used_count) || 0)
+    if (usedCount >= maxUses) return res.status(409).json({ error: 'COUPON_USAGE_LIMIT' })
+    const now = Date.now()
+    if (c.valid_from && new Date(c.valid_from).getTime() > now) return res.status(409).json({ error: 'COUPON_NOT_YET_VALID' })
+    if (c.valid_to && new Date(c.valid_to).getTime() < now) return res.status(409).json({ error: 'COUPON_EXPIRED' })
+    discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal })
+  }
+  const total = Math.max(0, subtotal - discountAmount)
+
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const [orderResult] = await conn.query(
+      `INSERT INTO pending_orders (customer_name, coupon_code, discount_amount, subtotal, total)
+       VALUES (:cn, :cc, :da, :st, :t)`,
+      { cn: customerName || null, cc: couponCode || null, da: discountAmount, st: subtotal, t: total }
+    )
+    const pendingOrderId = Number(orderResult.insertId)
+
+    for (const item of items) {
+      const menuId = item?.menuId ? Number(item.menuId) : item?.id ? Number(item.id) : null
+      const name = String(item?.name || '').trim()
+      const note = String(item?.note || '').trim()
+      const price = Number(item?.price) || 0
+      const hpp = Number(item?.hpp) || 0
+      const qty = Math.max(1, Number(item?.qty) || 1)
+      if (!name) continue
+
+      const [itemResult] = await conn.query(
+        `INSERT INTO pending_order_items (pending_order_id, menu_id, name, note, price, hpp, qty)
+         VALUES (:po, :mid, :n, :no, :p, :h, :q)`,
+        { po: pendingOrderId, mid: menuId, n: name, no: note || null, p: price, h: hpp, q: qty }
+      )
+      const pendingItemId = Number(itemResult.insertId)
+
+      const addOns = Array.isArray(item?.addOns) ? item.addOns : []
+      for (const addOn of addOns) {
+        const addOnId = addOn?.id ? Number(addOn.id) : null
+        const addOnName = String(addOn?.name || '').trim()
+        const addOnPrice = Number(addOn?.price) || 0
+        const addOnHpp = Number(addOn?.hpp) || 0
+        if (!addOnName) continue
+        await conn.query(
+          `INSERT INTO pending_order_item_addons (pending_order_item_id, add_on_id, name, price, hpp)
+           VALUES (:pi, :aid, :n, :p, :h)`,
+          { pi: pendingItemId, aid: addOnId, n: addOnName, p: addOnPrice, h: addOnHpp }
+        )
+      }
+    }
+
+    await conn.commit()
+    const lite = String(req.query?.lite || '') === '1'
+    if (lite) {
+      const pendingOrders = await getPendingOrdersData()
+      return res.json({ pendingOrders, createdPendingOrderId: pendingOrderId })
+    }
+    const data = await getBootstrapData()
+    res.json({ ...data, createdPendingOrderId: pendingOrderId })
+  } catch {
+    await conn.rollback()
+    res.status(500).json({ error: 'SERVER_ERROR' })
+  } finally {
+    conn.release()
+  }
+})
+
+app.delete('/api/pending-orders/:id', requireDb, requireAuth, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!id) return res.status(400).json({ error: 'INVALID_INPUT' })
+  await pool.query('DELETE FROM pending_orders WHERE id = :id', { id })
+  const lite = String(req.query?.lite || '') === '1'
+  if (lite) {
+    const pendingOrders = await getPendingOrdersData()
+    return res.json({ pendingOrders })
+  }
+  const data = await getBootstrapData()
+  res.json(data)
 })
 
 app.use('/api', (req, res) => {

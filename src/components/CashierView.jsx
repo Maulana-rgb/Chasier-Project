@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/useStore'
-import { ShoppingCart, Search, Trash2, CheckCircle } from 'lucide-react'
+import { ShoppingCart, Search, Trash2, CheckCircle, Clock, Download } from 'lucide-react'
+import QRCode from 'qrcode'
 
-const CashierView = () => {
+const CashierView = ({ view = 'pos' }) => {
   const { 
-    menus, addOns, categories, shifts, openShiftId, openShift, closeShift, addTransaction, previewCoupon
+    menus, addOns, categories, shifts, openShiftId, openShift, closeShift, addTransaction, previewCoupon, receiptSettings, generateQrisDynamic, pendingOrders, createPendingOrder, deletePendingOrder
   } = useStore()
 
   const [cart, setCart] = useState([])
@@ -23,9 +24,17 @@ const CashierView = () => {
   const [showCloseShift, setShowCloseShift] = useState(false)
   const [closingCash, setClosingCash] = useState('')
   const [closeShiftSummary, setCloseShiftSummary] = useState(null)
+  const [shiftNotice, setShiftNotice] = useState(null)
   const [couponCode, setCouponCode] = useState('')
   const [appliedCoupon, setAppliedCoupon] = useState(null)
   const [couponError, setCouponError] = useState('')
+  const [qrisBusy, setQrisBusy] = useState(false)
+  const [qrisError, setQrisError] = useState('')
+  const [qrisPayload, setQrisPayload] = useState('')
+  const [qrisDataUrl, setQrisDataUrl] = useState('')
+  const [activePendingId, setActivePendingId] = useState(null)
+  const [expandedPendingId, setExpandedPendingId] = useState(null)
+  const [pendingBusy, setPendingBusy] = useState(null)
 
   const toDigits = (value) => String(value || '').replace(/\D/g, '')
   const formatIdr = (digits) => digits ? Number(digits).toLocaleString('id-ID') : ''
@@ -45,7 +54,11 @@ const CashierView = () => {
 
   const addToCart = (menu) => {
     const key = getAddOnKey([])
-    const existing = cart.find(item => item.menuId === menu.id && getAddOnKey(item.selectedAddOnIds) === key)
+    const existing = cart.find(item =>
+      item.menuId === menu.id &&
+      getAddOnKey(item.selectedAddOnIds) === key &&
+      String(item.note || '').trim() === ''
+    )
     if (existing) {
       setCart(cart.map(item => item.lineId === existing.lineId ? { ...item, qty: item.qty + 1 } : item))
       return
@@ -62,6 +75,7 @@ const CashierView = () => {
         qty: 1,
         availableAddOnIds: menu.addOnIds || [],
         selectedAddOnIds: [],
+        note: '',
       },
     ])
   }
@@ -79,6 +93,10 @@ const CashierView = () => {
       }
       return item
     }))
+  }
+
+  const updateNote = (lineId, note) => {
+    setCart(cart.map(item => item.lineId === lineId ? { ...item, note } : item))
   }
 
   const addOnById = Object.fromEntries(addOns.map(a => [a.id, a]))
@@ -124,7 +142,8 @@ const CashierView = () => {
 
       const existingTarget = merged.find(i =>
         i.menuId === newLine.menuId &&
-        getAddOnKey(i.selectedAddOnIds) === getAddOnKey(newLine.selectedAddOnIds)
+        getAddOnKey(i.selectedAddOnIds) === getAddOnKey(newLine.selectedAddOnIds) &&
+        String(i.note || '').trim() === String(newLine.note || '').trim()
       )
 
       if (existingTarget) {
@@ -159,11 +178,13 @@ const CashierView = () => {
   }
 
   const subtotal = cart.reduce((acc, item) => acc + (getUnitPrice(item) * item.qty), 0)
+  const cartItemCount = cart.reduce((acc, item) => acc + (Number(item.qty) || 0), 0)
   const discountAmount = Math.max(0, Math.min(subtotal, Number(appliedCoupon?.discountAmount) || 0))
   const total = Math.max(0, subtotal - discountAmount)
   const changeAmount = paymentMethod === 'Cash' && Number(cashAmount) > total ? Number(cashAmount) - total : 0
 
   const openShiftData = openShiftId ? (shifts || []).find(s => s.id === openShiftId) : null
+  const hasPendingOrders = (pendingOrders || []).length > 0
   const prevSubtotalRef = useRef(subtotal)
 
   useEffect(() => {
@@ -224,9 +245,22 @@ const CashierView = () => {
   }
 
   const getReceiptHtml = (transaction) => {
+    const headerText = String(receiptSettings?.headerText || '').trim()
+    const footerText = String(receiptSettings?.footerText || '').trim()
+    const headerLines = headerText ? headerText.split('\n').map(s => s.trim()).filter(Boolean) : []
+    const footerLines = footerText ? footerText.split('\n').map(s => s.trim()).filter(Boolean) : []
+    const headerHtml = headerLines.length
+      ? headerLines.map((line, idx) => idx === 0
+        ? `<div class="bold">${escapeHtml(line)}</div>`
+        : `<div class="small muted">${escapeHtml(line)}</div>`
+      ).join('')
+      : ''
+    const footerHtml = footerLines.map(line => `<div>${escapeHtml(line)}</div>`).join('')
+
     const itemsHtml = (transaction.items || []).map((item) => {
       const qty = Number(item.qty || 0)
       const baseUnit = Number(item.price || 0)
+      const note = String(item.note || '').trim()
       const addOns = Array.isArray(item.addOns) ? item.addOns : []
       const addOnUnitTotal = getAddOnTotal(addOns)
       const lineTotal = (baseUnit + addOnUnitTotal) * qty
@@ -240,11 +274,13 @@ const CashierView = () => {
             return `<div>${escapeHtml(a?.name || '')} (${priceText})</div>`
           }).join('')}</div>`
         : ''
+      const noteHtml = note ? `<div class="muted small">${escapeHtml(note)}</div>` : ''
 
       return `
         <div class="row">
           <div style="flex:1;">
             <div class="bold">${escapeHtml(item.name)}</div>
+            ${noteHtml}
             ${addOnsHtml}
           </div>
           <div class="right mono">${qty} x Rp ${baseUnit.toLocaleString('id-ID')}</div>
@@ -284,8 +320,7 @@ const CashierView = () => {
           <div class="receipt">
             <div class="center">
               <img class="logo" src="/receipt-logo.jpeg" alt="Dimsay" onerror="this.style.display='none'" />
-              <div class="bold">DIMSUM DIMSAY</div>
-              <div class="small muted">By Mahia</div>
+              ${headerHtml}
             </div>
             <div class="divider"></div>
             <div class="small">
@@ -308,13 +343,12 @@ const CashierView = () => {
               <div class="muted">Kembali</div><div class="mono right">Rp ${Number(transaction.changeAmount || 0).toLocaleString('id-ID')}</div>
             </div>
             ` : ''}
+            ${footerLines.length ? `
             <div class="divider"></div>
             <div class="center small muted">
-              <div>"Sekali Dimsay, Susah Move On" 😋</div>
-              <div>Makasih sudah jajan!</div>
-              <div>Follow us for more yum: @dimsumdimsay.bymahia</div>
-              <div>Whatsapp: 0822-7686-3616</div>
+              ${footerHtml}
             </div>
+            ` : ''}
           </div>
         </body>
       </html>
@@ -374,6 +408,113 @@ const CashierView = () => {
     }
   }
 
+  const handleGenerateQris = async () => {
+    if (!receiptTransaction) return
+    if (receiptTransaction.paymentMethod !== 'QRIS') return
+    setQrisError('')
+    setQrisBusy(true)
+    try {
+      const amount = Number(receiptTransaction.total || 0)
+      const result = await generateQrisDynamic({ amount })
+      const payload = String(result?.qris || '').trim()
+      if (!payload) throw new Error('QRIS_EMPTY')
+      const dataUrl = await QRCode.toDataURL(payload, { margin: 1, width: 280 })
+      setQrisPayload(payload)
+      setQrisDataUrl(String(dataUrl || ''))
+    } catch (err) {
+      setQrisPayload('')
+      setQrisDataUrl('')
+      setQrisError(err?.data?.error || err?.message || 'Gagal generate QRIS')
+    } finally {
+      setQrisBusy(false)
+    }
+  }
+
+  const handleSavePending = async () => {
+    if (cart.length === 0) return
+    if (pendingBusy) return
+    setPendingBusy({ type: 'save' })
+    const itemsForPending = cart.map(item => ({
+      id: item.menuId,
+      name: item.name,
+      note: String(item.note || '').trim(),
+      category: item.category,
+      price: item.price,
+      hpp: item.hpp || 0,
+      qty: item.qty,
+      addOns: getSelectedAddOns(item.selectedAddOnIds || []).map(a => ({ id: a.id, name: a.name, price: a.price, hpp: a.hpp || 0 })),
+    }))
+
+    try {
+      await createPendingOrder({
+        customerName,
+        couponCode: appliedCoupon?.code || couponCode || '',
+        items: itemsForPending,
+      })
+
+      setCart([])
+      setPaymentMethod('')
+      setCustomerName('')
+      setCashAmount('')
+      setCouponCode('')
+      setAppliedCoupon(null)
+      setCouponError('')
+      setExpandedItemId(null)
+      setActivePendingId(null)
+    } finally {
+      setPendingBusy(null)
+    }
+  }
+
+  const handleLoadPending = (p) => {
+    if (!p) return
+    const nextCart = (p.items || []).map((item) => {
+      const menu = menus.find(m => Number(m.id) === Number(item.menuId))
+      const availableAddOnIds = menu?.addOnIds || []
+      const selectedAddOnIds = (item.addOns || [])
+        .map(a => a?.id)
+        .filter(id => id !== null && id !== undefined)
+        .map(id => Number(id))
+      return {
+        lineId: createLineId(),
+        menuId: item.menuId,
+        name: item.name,
+        price: Number(item.price) || 0,
+        hpp: Number(item.hpp) || 0,
+        category: menu?.category || item.category || 'Lainnya',
+        qty: Math.max(1, Number(item.qty) || 1),
+        availableAddOnIds,
+        selectedAddOnIds,
+        note: String(item.note || ''),
+      }
+    })
+
+    setCart(nextCart)
+    setPaymentMethod('')
+    setCustomerName(String(p.customerName || ''))
+    const code = String(p.couponCode || '').trim()
+    setCouponCode(code)
+    setAppliedCoupon((code && Number(p.discountAmount || 0) > 0) ? { code, discountAmount: Number(p.discountAmount || 0) } : null)
+    setCouponError('')
+    setCashAmount('')
+    setExpandedItemId(null)
+    setActivePendingId(Number(p.id))
+  }
+
+  const handleRemovePending = async (id) => {
+    const ok = window.confirm('Hapus pending transaksi ini?')
+    if (!ok) return
+    if (pendingBusy) return
+    setPendingBusy({ type: 'delete', id: Number(id) })
+    try {
+      await deletePendingOrder(id)
+      if (Number(activePendingId) === Number(id)) setActivePendingId(null)
+      if (Number(expandedPendingId) === Number(id)) setExpandedPendingId(null)
+    } finally {
+      setPendingBusy(null)
+    }
+  }
+
   const handleCheckout = async () => {
     if (cart.length === 0) return
     if (!paymentMethod) return
@@ -382,6 +523,7 @@ const CashierView = () => {
     const itemsForTransaction = cart.map(item => ({
       id: item.menuId,
       name: item.name,
+      note: String(item.note || '').trim(),
       category: item.category,
       price: item.price,
       hpp: item.hpp || 0,
@@ -399,11 +541,17 @@ const CashierView = () => {
       cashAmount: paymentMethod === 'Cash' ? Number(cashAmount) : 0,
       changeAmount,
       shiftId: openShiftId,
+      pendingOrderId: activePendingId,
     }
 
     const created = await addTransaction(transaction)
     setReceiptTransaction(created)
     setShowReceipt(true)
+    setQrisBusy(false)
+    setQrisError('')
+    setQrisPayload('')
+    setQrisDataUrl('')
+    setActivePendingId(null)
     setCart([])
     setPaymentMethod('')
     setCustomerName('')
@@ -414,6 +562,188 @@ const CashierView = () => {
     setExpandedItemId(null)
     setShowSuccess(true)
     setTimeout(() => setShowSuccess(false), 3000)
+  }
+
+  const requestOpenShift = useCallback(() => {
+    if (openShiftId) {
+      setShiftNotice({
+        title: 'Shift Sudah Aktif',
+        message: 'Shift sudah dibuka. Tutup shift terlebih dahulu jika ingin memulai shift baru.',
+      })
+      return
+    }
+    setShowOpenShift(true)
+  }, [openShiftId])
+
+  const requestCloseShift = useCallback(() => {
+    if (!openShiftId) {
+      setShiftNotice({ title: 'Shift Belum Dibuka', message: 'Buka shift terlebih dahulu sebelum menutup shift.' })
+      return
+    }
+    if (cart.length > 0) {
+      setShiftNotice({ title: 'Tidak Bisa Tutup Shift', message: 'Kosongkan keranjang terlebih dahulu untuk tutup shift.' })
+      return
+    }
+    if (hasPendingOrders) {
+      setShiftNotice({ title: 'Tidak Bisa Tutup Shift', message: 'Hapus atau selesaikan pending transaksi terlebih dahulu untuk tutup shift.' })
+      return
+    }
+    setShowCloseShift(true)
+  }, [openShiftId, cart.length, hasPendingOrders])
+
+  useEffect(() => {
+    const onOpenShift = () => requestOpenShift()
+    const onCloseShift = () => requestCloseShift()
+    window.addEventListener('cashier:openShift', onOpenShift)
+    window.addEventListener('cashier:closeShift', onCloseShift)
+    return () => {
+      window.removeEventListener('cashier:openShift', onOpenShift)
+      window.removeEventListener('cashier:closeShift', onCloseShift)
+    }
+  }, [requestOpenShift, requestCloseShift])
+
+  if (view === 'pending') {
+    return (
+      <div className="max-w-4xl mx-auto space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-2xl font-bold text-dimsum-dark">Pending Transaksi</h3>
+            <p className="text-sm text-gray-500 mt-1">Ambil kembali pesanan yang disimpan dari kasir.</p>
+          </div>
+          <div className="px-3 py-2 rounded-xl bg-white border border-gray-100 shadow-sm text-xs font-black text-dimsum-dark">
+            {(pendingOrders || []).length} pending
+          </div>
+        </div>
+        {pendingBusy && (
+          <div className="p-3 rounded-xl bg-white border border-gray-100 shadow-sm flex items-center gap-3">
+            <div className="w-4 h-4 rounded-full border-2 border-gray-300 border-t-dimsum-red animate-spin" />
+            <div className="text-sm font-bold text-gray-700">
+              {pendingBusy.type === 'save' ? 'Menyimpan pending...' : 'Memproses...'}
+            </div>
+          </div>
+        )}
+
+        {(pendingOrders || []).length === 0 ? (
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-10 text-center text-gray-400">
+            <Clock size={48} className="mx-auto mb-3 opacity-20" />
+            <p className="font-bold">Belum ada pending</p>
+            <p className="text-sm mt-1">Gunakan tombol Simpan Pending di kasir.</p>
+          </div>
+        ) : (
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-6 space-y-3">
+            {(pendingOrders || []).map((p) => {
+              const itemsCount = (p.items || []).reduce((acc, it) => acc + (Number(it.qty) || 0), 0)
+              const isActive = Number(activePendingId) === Number(p.id)
+              const isExpanded = Number(expandedPendingId) === Number(p.id)
+              return (
+                <div key={p.id} className={`p-4 rounded-2xl border ${isActive ? 'border-dimsum-red bg-red-50' : 'border-gray-100 bg-gray-50'}`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-black text-dimsum-dark">Pending #{String(p.id).slice(-6)}</p>
+                        {isActive && (
+                          <span className="text-[10px] font-black px-2 py-1 rounded-full bg-dimsum-red text-white">
+                            Aktif
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        {p.createdAt ? new Date(p.createdAt).toLocaleString('id-ID') : ''}
+                      </p>
+                      {p.customerName && (
+                        <p className="text-[11px] font-bold text-dimsum-red mt-1">Pelanggan: {p.customerName}</p>
+                      )}
+                      <p className="text-[11px] text-gray-600 mt-1">
+                        {itemsCount} item • Rp {(Number(p.total) || 0).toLocaleString('id-ID')}
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedPendingId(isExpanded ? null : Number(p.id))}
+                        disabled={Boolean(pendingBusy)}
+                        className="px-4 py-2 rounded-xl bg-white border border-gray-200 text-gray-700 font-bold text-xs hover:bg-gray-50"
+                      >
+                        {isExpanded ? 'Tutup Detail' : 'Lihat Pesanan'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleLoadPending(p)}
+                        disabled={Boolean(pendingBusy)}
+                        className="px-4 py-2 rounded-xl bg-dimsum-dark text-white font-bold text-xs hover:bg-black"
+                      >
+                        Ambil ke Kasir
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePending(p.id)}
+                        disabled={Boolean(pendingBusy)}
+                        className="px-4 py-2 rounded-xl bg-white border border-gray-200 text-gray-700 font-bold text-xs hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      >
+                        {pendingBusy?.type === 'delete' && Number(pendingBusy?.id) === Number(p.id) && (
+                          <div className="w-4 h-4 rounded-full border-2 border-gray-300 border-t-dimsum-red animate-spin" />
+                        )}
+                        Hapus
+                      </button>
+                    </div>
+                  </div>
+                  {isExpanded && (
+                    <div className="mt-4 pt-4 border-t border-gray-200 space-y-3">
+                      {(p.couponCode || Number(p.discountAmount || 0) > 0) && (
+                        <div className="flex items-center justify-between gap-3 text-[11px]">
+                          <div className="text-gray-600 font-bold">
+                            Kupon{p.couponCode ? ` (${p.couponCode})` : ''}
+                          </div>
+                          <div className="font-mono font-bold text-dimsum-red">
+                            {Number(p.discountAmount || 0) > 0 ? `-Rp ${(Number(p.discountAmount) || 0).toLocaleString('id-ID')}` : ''}
+                          </div>
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        {(p.items || []).map((it, idx) => {
+                          const qty = Math.max(1, Number(it.qty) || 1)
+                          const baseUnit = Number(it.price || 0)
+                          const addOns = Array.isArray(it.addOns) ? it.addOns : []
+                          const addOnUnitTotal = getAddOnTotal(addOns)
+                          const unitTotal = baseUnit + addOnUnitTotal
+                          const lineTotal = unitTotal * qty
+                          const note = String(it.note || '').trim()
+                          return (
+                            <div key={`${p.id}-${idx}`} className="p-3 rounded-xl bg-white border border-gray-100">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex-1">
+                                  <p className="text-sm font-black text-dimsum-dark">{it.name}</p>
+                                  {note && (
+                                    <p className="text-[11px] text-gray-500 mt-0.5">{note}</p>
+                                  )}
+                                  {addOns.length > 0 && (
+                                    <div className="mt-1 space-y-0.5">
+                                      {addOns.map((a) => (
+                                        <div key={a.id ?? a.name} className="text-[11px] text-gray-500 font-mono">
+                                          +Rp {(Number(a.price || 0) * qty).toLocaleString('id-ID')} {a.name}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-[11px] text-gray-600 font-mono">{qty} x Rp {baseUnit.toLocaleString('id-ID')}</p>
+                                  <p className="text-sm font-black text-dimsum-red font-mono mt-1">Rp {Number(lineTotal).toLocaleString('id-ID')}</p>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -477,57 +807,9 @@ const CashierView = () => {
             <ShoppingCart className="text-dimsum-red" />
             <h3 className="text-xl font-bold">Keranjang Belanja</h3>
           </div>
-          <div className="p-4 rounded-xl border border-gray-100 bg-gray-50 flex items-start justify-between gap-4">
-            <div className="flex-1">
-              <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Shift</p>
-              {openShiftId && openShiftData ? (
-                <>
-                  <p className="font-bold text-dimsum-dark">Aktif</p>
-                  <p className="text-xs text-gray-500">Saldo awal: Rp {(openShiftData.openingBalance || 0).toLocaleString()}</p>
-                </>
-              ) : (
-                <p className="font-bold text-red-700">Belum dibuka</p>
-              )}
-            </div>
-            <div className="flex flex-col gap-2">
-              {!openShiftId ? (
-                <button
-                  type="button"
-                  onClick={() => setShowOpenShift(true)}
-                  className="px-4 py-2 rounded-lg bg-dimsum-red text-white font-bold hover:bg-red-700"
-                >
-                  Buka Shift
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setShowCloseShift(true)}
-                  disabled={cart.length > 0}
-                  className={`px-4 py-2 rounded-lg font-bold ${cart.length > 0 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-dimsum-dark text-white hover:bg-black'}`}
-                >
-                  Tutup Shift
-                </button>
-              )}
-              {openShiftId && cart.length > 0 && (
-                <p className="text-[10px] text-gray-400 text-right">Kosongkan keranjang untuk tutup shift</p>
-              )}
-            </div>
-          </div>
-          <div>
-            <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">
-              Nama Customer (Opsional)
-            </label>
-            <input 
-              type="text" 
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Masukkan nama..." 
-              className="w-full p-2 border rounded-lg text-sm focus:ring-2 focus:ring-dimsum-red outline-none"
-            />
-          </div>
         </div>
 
-        <div className="overflow-y-auto p-6 space-y-4 max-h-[45vh]">
+        <div className="overflow-y-auto p-6 space-y-4 max-h-[75vh]">
           {cart.length === 0 ? (
             <div className="text-center py-10 text-gray-400">
               <ShoppingCart size={48} className="mx-auto mb-2 opacity-20" />
@@ -545,6 +827,13 @@ const CashierView = () => {
                     <p className="text-xs text-gray-500">
                       Rp {Number(item.price || 0).toLocaleString()} / porsi
                     </p>
+                    <input
+                      type="text"
+                      value={item.note || ''}
+                      onChange={(e) => updateNote(item.lineId, e.target.value)}
+                      placeholder="Catatan (opsional)"
+                      className="mt-2 w-full p-2 border rounded-lg text-sm focus:ring-2 focus:ring-dimsum-red outline-none"
+                    />
                   </div>
                   <div className="flex items-center gap-3">
                     <div className="flex items-center border rounded-lg overflow-hidden">
@@ -618,6 +907,22 @@ const CashierView = () => {
         </div>
 
         <div className="p-6 bg-gray-50 border-t rounded-b-2xl space-y-3">
+          <div>
+            <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">
+              Nama Customer (Opsional)
+            </label>
+            <input
+              type="text"
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Masukkan nama..."
+              className="w-full p-2 border rounded-lg bg-white text-sm focus:ring-2 focus:ring-dimsum-red outline-none"
+            />
+          </div>
+          <div className="flex justify-between text-gray-600">
+            <span>Jumlah Item</span>
+            <span>{cartItemCount}</span>
+          </div>
           <div className="flex justify-between text-gray-600">
             <span>Subtotal</span>
             <span>Rp {subtotal.toLocaleString()}</span>
@@ -723,6 +1028,24 @@ const CashierView = () => {
                 : paymentMethod === 'Cash' && Number(cashAmount) < total
                   ? 'Uang Kurang'
                   : 'Bayar Sekarang'}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSavePending}
+            disabled={cart.length === 0 || pendingBusy?.type === 'save'}
+            className="w-full mt-2 bg-dimsum-dark text-white py-3 rounded-xl font-bold shadow-lg hover:bg-black transition-all disabled:bg-gray-300 disabled:shadow-none flex items-center justify-center gap-2"
+          >
+            {pendingBusy?.type === 'save' ? (
+              <>
+                <div className="w-4 h-4 rounded-full border-2 border-white/50 border-t-white animate-spin" />
+                Menyimpan...
+              </>
+            ) : (
+              <>
+                <Download size={18} /> Simpan Pending
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -831,15 +1154,91 @@ const CashierView = () => {
                   </div>
                 </div>
               )}
+
+              {receiptTransaction.paymentMethod === 'QRIS' && (
+                <div className="p-4 rounded-xl border border-gray-100 bg-gray-50 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">QRIS</p>
+                      <p className="text-sm font-bold text-dimsum-dark">Scan untuk bayar</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleGenerateQris}
+                      disabled={qrisBusy}
+                      className="px-3 py-2 rounded-lg bg-dimsum-dark text-white font-bold text-sm hover:bg-black disabled:opacity-50"
+                    >
+                      {qrisBusy ? 'Generating…' : 'Generate QRIS'}
+                    </button>
+                  </div>
+
+                  {qrisError && (
+                    <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm font-bold">
+                      {qrisError}
+                    </div>
+                  )}
+
+                  {qrisDataUrl && (
+                    <div className="bg-white rounded-xl border border-gray-100 p-4 flex flex-col items-center gap-3">
+                      <img src={qrisDataUrl} alt="QRIS" className="w-64 h-64 object-contain" />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(String(qrisPayload || ''))
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold text-sm hover:bg-gray-200"
+                      >
+                        Copy QRIS String
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="p-6 border-t bg-white">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => openPrintWindow(receiptTransaction)}
+                  className="flex-1 bg-dimsum-red text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-red-700 transition-all"
+                >
+                  Print Struk
+                </button>
+                {receiptTransaction.paymentMethod === 'QRIS' && (
+                  <button
+                    type="button"
+                    onClick={handleGenerateQris}
+                    disabled={qrisBusy}
+                    className="px-4 py-4 rounded-xl bg-dimsum-dark text-white font-bold shadow-lg hover:bg-black transition-all disabled:opacity-50"
+                  >
+                    QRIS
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shiftNotice && (
+        <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/50 animate-in fade-in duration-200 p-4">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div className="p-6 border-b">
+              <h3 className="text-xl font-black text-dimsum-dark">{shiftNotice.title}</h3>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-700 font-bold">{shiftNotice.message}</p>
               <button
                 type="button"
-                onClick={() => openPrintWindow(receiptTransaction)}
-                className="w-full bg-dimsum-red text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-red-700 transition-all"
+                onClick={() => setShiftNotice(null)}
+                className="w-full bg-dimsum-red text-white py-3 rounded-xl font-bold hover:bg-red-700 transition-all"
               >
-                Print Struk
+                Oke
               </button>
             </div>
           </div>

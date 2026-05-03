@@ -45,6 +45,8 @@ export const useStore = create((set, get) => ({
   openShiftId: null,
   users: [],
   coupons: [],
+  receiptSettings: { headerText: '', footerText: '' },
+  pendingOrders: [],
 
   hydrateFromBootstrap: (data) => {
     set({
@@ -56,6 +58,8 @@ export const useStore = create((set, get) => ({
       openShiftId: data.openShiftId ?? null,
       users: data.users || [],
       coupons: data.coupons || [],
+      receiptSettings: data.receiptSettings || { headerText: '', footerText: '' },
+      pendingOrders: data.pendingOrders || [],
     })
   },
 
@@ -75,6 +79,8 @@ export const useStore = create((set, get) => ({
           openShiftId: null,
           users: [],
           coupons: [],
+          receiptSettings: { headerText: '', footerText: '' },
+          pendingOrders: [],
         })
         return
       }
@@ -95,6 +101,8 @@ export const useStore = create((set, get) => ({
         openShiftId: null,
         users: [],
         coupons: [],
+        receiptSettings: { headerText: '', footerText: '' },
+        pendingOrders: [],
       })
     }
   },
@@ -252,6 +260,7 @@ export const useStore = create((set, get) => ({
       subtotal: Number(transaction?.subtotal) || 0,
       total: Number(transaction?.total) || 0,
       couponCode: String(transaction?.couponCode || ''),
+      pendingOrderId: transaction?.pendingOrderId ?? null,
       cashAmount: transaction?.cashAmount ?? null,
       changeAmount: transaction?.changeAmount ?? null,
       items: Array.isArray(transaction?.items) ? transaction.items : [],
@@ -263,6 +272,14 @@ export const useStore = create((set, get) => ({
       ? (data.transactions || []).find(t => Number(t.id) === createdId) || null
       : (data.transactions || [])[0] || null
     return tx
+  },
+
+  deleteTransaction: async (id) => {
+    const txId = Number(id)
+    if (!txId) return false
+    const data = await apiRequest(`/api/transactions/${encodeURIComponent(txId)}/delete`, { method: 'PATCH' })
+    get().hydrateFromBootstrap(data)
+    return true
   },
 
   fetchUsers: async () => {
@@ -320,5 +337,57 @@ export const useStore = create((set, get) => ({
   previewCoupon: async ({ code, subtotal }) => {
     const payload = { code: String(code || ''), subtotal: Number(subtotal) || 0 }
     return apiRequest('/api/coupons/preview', { method: 'POST', body: payload })
+  },
+
+  updateReceiptSettings: async ({ headerText, footerText }) => {
+    const payload = {
+      headerText: headerText ?? '',
+      footerText: footerText ?? '',
+    }
+    const data = await apiRequest('/api/settings/receipt', { method: 'PATCH', body: payload })
+    get().hydrateFromBootstrap(data)
+    return data.receiptSettings || null
+  },
+
+  generateQrisDynamic: async ({ amount }) => {
+    const payload = { amount: Number(amount) || 0 }
+    const data = await apiRequest('/api/qris/dynamic', { method: 'POST', body: payload })
+    return { qris: String(data?.qris || '') }
+  },
+
+  createPendingOrder: async ({ customerName, couponCode, items }) => {
+    const payload = {
+      customerName: String(customerName || ''),
+      couponCode: String(couponCode || ''),
+      items: Array.isArray(items) ? items : [],
+    }
+    const data = await apiRequest('/api/pending-orders?lite=1', { method: 'POST', body: payload })
+    if (Array.isArray(data?.pendingOrders)) {
+      set({ pendingOrders: data.pendingOrders })
+    } else {
+      get().hydrateFromBootstrap(data)
+    }
+    return data?.createdPendingOrderId ? Number(data.createdPendingOrderId) : null
+  },
+
+  deletePendingOrder: async (id) => {
+    const pid = Number(id)
+    if (!pid) return false
+    const data = await apiRequest(`/api/pending-orders/${encodeURIComponent(pid)}?lite=1`, { method: 'DELETE' })
+    if (Array.isArray(data?.pendingOrders)) {
+      set({ pendingOrders: data.pendingOrders })
+    } else {
+      get().hydrateFromBootstrap(data)
+    }
+    return true
+  },
+
+  changeMyPassword: async ({ currentPassword, newPassword }) => {
+    const payload = {
+      currentPassword: String(currentPassword || ''),
+      newPassword: String(newPassword || ''),
+    }
+    const data = await apiRequest('/api/auth/password', { method: 'PATCH', body: payload })
+    return Boolean(data?.ok)
   },
 }))

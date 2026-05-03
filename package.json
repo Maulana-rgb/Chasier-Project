@@ -12,16 +12,17 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
+    "clsx": "^2.1.1",
     "express": "^5.1.0",
     "express-mysql-session": "^3.0.3",
     "express-session": "^1.18.2",
+    "lucide-react": "^0.474.0",
+    "mysql2": "^3.14.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zustand": "^5.0.3",
-    "lucide-react": "^0.474.0",
-    "clsx": "^2.1.1",
     "tailwind-merge": "^3.0.1",
-    "mysql2": "^3.14.0"
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
