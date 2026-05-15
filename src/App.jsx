@@ -6,7 +6,7 @@ import DashboardView from './components/DashboardView'
 import TransactionsView from './components/TransactionsView'
 import SoldStockView from './components/SoldStockView'
 import ShiftHistoryView from './components/ShiftHistoryView'
-import { Eye, EyeOff, Maximize2, Minimize2, Store } from 'lucide-react'
+import { Eye, EyeOff, Maximize2, Minimize2 } from 'lucide-react'
 
 function App() {
   const { currentUser, login, logout, init, isAuthLoading, isDataLoading, openShiftId, shifts, pendingOrders } = useStore()
@@ -78,22 +78,22 @@ function App() {
     <div className="min-h-screen flex flex-col bg-gray-50">
       {/* Navigation Bar */}
       <nav className="bg-dimsum-red text-white p-4 shadow-xl sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
           <div className="flex items-center gap-3">
             <div className="bg-white p-2 rounded-lg">
-              <Store className="text-dimsum-red" size={24} />
+              <img src="/receipt-logo.jpeg" alt="Dimsay" className="w-8 h-8 object-contain" />
             </div>
             <div>
-              <h1 className="text-2xl font-black tracking-tighter italic">DIMSUM DIMSAY</h1>
-              <p className="text-[10px] uppercase tracking-widest font-bold opacity-80">BY MAHIA</p>
+              <h1 className="text-lg sm:text-2xl font-black tracking-tighter italic leading-tight">DIMSUM DIMSAY</h1>
+              <p className="text-[9px] sm:text-[10px] uppercase tracking-widest font-bold opacity-80">BY MAHIA</p>
             </div>
           </div>
 
           {currentUser ? (
-            <div className="flex items-center gap-3">
+            <div className="w-full sm:w-auto flex items-center justify-end gap-2 sm:gap-3 flex-wrap">
               <div className="text-right">
                 <p className="text-xs font-bold">{currentUser.username}</p>
-                <p className="text-[10px] uppercase tracking-widest font-bold opacity-80">{currentUser.role === 'owner' ? 'Owner' : 'Kasir'}</p>
+                <p className="hidden sm:block text-[10px] uppercase tracking-widest font-bold opacity-80">{currentUser.role === 'owner' ? 'Owner' : 'Kasir'}</p>
               </div>
               <button
                 type="button"
@@ -122,20 +122,20 @@ function App() {
                   onClick={() => {
                     window.dispatchEvent(new Event(openShiftId ? 'cashier:closeShift' : 'cashier:openShift'))
                   }}
-                  className={`px-4 py-2 rounded-lg font-bold ${openShiftId ? 'bg-dimsum-dark text-white hover:bg-black' : 'bg-white text-dimsum-red hover:bg-red-50'}`}
+                  className={`px-3 sm:px-4 py-2 rounded-lg font-bold text-sm ${openShiftId ? 'bg-dimsum-dark text-white hover:bg-black' : 'bg-white text-dimsum-red hover:bg-red-50'}`}
                 >
                   {openShiftId ? 'Tutup Shift' : 'Buka Shift'}
                 </button>
               )}
               <button
                 onClick={() => logout()}
-                className="px-4 py-2 rounded-lg bg-red-800/50 hover:bg-red-700/50 font-bold"
+                className="px-3 sm:px-4 py-2 rounded-lg bg-red-800/50 hover:bg-red-700/50 font-bold text-sm"
               >
                 Logout
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-3">
+            <div className="w-full sm:w-auto flex items-center justify-end gap-3">
               <div className="text-xs font-bold opacity-80">Silakan login</div>
               <button
                 type="button"
@@ -206,16 +206,16 @@ function App() {
         </main>
       ) : role === 'cashier' ? (
         <div className="bg-white border-b border-gray-200">
-          <div className="max-w-7xl mx-auto flex gap-8 px-6">
+          <div className="max-w-7xl mx-auto flex gap-6 px-4 sm:px-6 overflow-x-auto">
             <button
               onClick={() => setCashierTab('pos')}
-              className={`py-4 font-bold border-b-2 transition-all ${cashierTab === 'pos' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all flex-shrink-0 ${cashierTab === 'pos' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Kasir
             </button>
             <button
               onClick={() => setCashierTab('pending')}
-              className={`py-4 font-bold border-b-2 transition-all relative ${cashierTab === 'pending' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all relative flex-shrink-0 ${cashierTab === 'pending' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Pending
               {pendingCount > 0 && (
@@ -226,7 +226,7 @@ function App() {
             </button>
             <button
               onClick={() => setCashierTab('transactions')}
-              className={`py-4 font-bold border-b-2 transition-all ${cashierTab === 'transactions' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all flex-shrink-0 ${cashierTab === 'transactions' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Lihat Transaksi
             </button>
@@ -234,34 +234,34 @@ function App() {
         </div>
       ) : (
         <div className="bg-white border-b border-gray-200">
-          <div className="max-w-7xl mx-auto flex gap-8 px-6">
+          <div className="max-w-7xl mx-auto flex gap-6 px-4 sm:px-6 overflow-x-auto">
             <button 
               onClick={() => setOwnerTab('dashboard')}
-              className={`py-4 font-bold border-b-2 transition-all ${ownerTab === 'dashboard' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all flex-shrink-0 ${ownerTab === 'dashboard' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Summary Penjualan
             </button>
             <button 
               onClick={() => setOwnerTab('transactions')}
-              className={`py-4 font-bold border-b-2 transition-all ${ownerTab === 'transactions' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all flex-shrink-0 ${ownerTab === 'transactions' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Lihat Transaksi
             </button>
             <button 
               onClick={() => setOwnerTab('sold')}
-              className={`py-4 font-bold border-b-2 transition-all ${ownerTab === 'sold' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all flex-shrink-0 ${ownerTab === 'sold' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Stock Penjualan
             </button>
             <button 
               onClick={() => setOwnerTab('shift')}
-              className={`py-4 font-bold border-b-2 transition-all ${ownerTab === 'shift' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all flex-shrink-0 ${ownerTab === 'shift' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               History Shift
             </button>
             <button 
               onClick={() => setOwnerTab('management')}
-              className={`py-4 font-bold border-b-2 transition-all ${ownerTab === 'management' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
+              className={`py-4 font-bold border-b-2 transition-all flex-shrink-0 ${ownerTab === 'management' ? 'border-dimsum-red text-dimsum-red' : 'border-transparent text-gray-500 hover:text-dimsum-red'}`}
             >
               Manajemen Menu
             </button>

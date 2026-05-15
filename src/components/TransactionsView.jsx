@@ -42,7 +42,7 @@ const TransactionsView = ({ mode }) => {
     const footerLines = footerText ? footerText.split('\n').map(s => s.trim()).filter(Boolean) : []
     const headerHtml = headerLines.length
       ? headerLines.map((line, idx) => idx === 0
-        ? `<div class="bold">${escapeHtml(line)}</div>`
+        ? `<div class="bold header-main">${escapeHtml(line)}</div>`
         : `<div class="small muted">${escapeHtml(line)}</div>`
       ).join('')
       : ''
@@ -99,11 +99,12 @@ const TransactionsView = ({ mode }) => {
             .bold { font-weight: 800; }
             .muted { color: #666; }
             .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-            .small { font-size: 12px; }
+            .small { font-size: 16px; }
+            .header-main { font-size: 18px; }
             .divider { border-top: 1px dashed #bbb; margin: 10px 0; }
             .row { display: flex; gap: 12px; align-items: flex-start; }
             .totals { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; }
-            .logo { display: block; margin: 0 auto 6px; width: 70px; height: auto; }
+            .logo { display: block; margin: 0 auto 6px; width: 130px; height: auto; }
             @media print { body { padding: 0; } .receipt { width: 80mm; } }
           </style>
         </head>
@@ -140,6 +141,73 @@ const TransactionsView = ({ mode }) => {
               ${footerHtml}
             </div>
             ` : ''}
+          </div>
+        </body>
+      </html>
+    `
+  }
+
+  const getOrderSlipHtml = (transaction) => {
+    const itemsHtml = (transaction.items || []).map((item) => {
+      const qty = Number(item.qty || 0)
+      const note = String(item.note || '').trim()
+      const addOns = Array.isArray(item.addOns) ? item.addOns : []
+      const addOnsHtml = addOns.length > 0
+        ? `<div class="muted small">${addOns.map(a => `<div>+ ${escapeHtml(a?.name || '')}</div>`).join('')}</div>`
+        : ''
+      const noteHtml = note ? `<div class="muted small">${escapeHtml(note)}</div>` : ''
+
+      return `
+        <div class="row">
+          <div class="qty mono">${qty}</div>
+          <div style="flex:1;">
+            <div class="bold">${escapeHtml(item.name)}</div>
+            ${noteHtml}
+            ${addOnsHtml}
+          </div>
+        </div>
+        <div class="divider"></div>
+      `
+    }).join('')
+
+    const dateText = transaction.date ? new Date(transaction.date).toLocaleString('id-ID') : ''
+    const txNo = transaction.publicId || (transaction.id ? String(transaction.id).slice(-6) : '')
+
+    return `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Pesanan</title>
+          <style>
+            body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; padding: 16px; }
+            .receipt { width: 320px; margin: 0 auto; }
+            .center { text-align: center; }
+            .bold { font-weight: 800; }
+            .muted { color: #666; }
+            .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+            .small { font-size: 14px; }
+            .title { font-size: 20px; letter-spacing: 1px; }
+            .divider { border-top: 1px dashed #bbb; margin: 10px 0; }
+            .row { display: flex; gap: 12px; align-items: flex-start; }
+            .qty { width: 28px; text-align: right; font-size: 18px; font-weight: 800; }
+            @media print { body { padding: 0; } .receipt { width: 80mm; } }
+          </style>
+        </head>
+        <body>
+          <div class="receipt">
+            <div class="center">
+              <div class="bold title">PESANAN</div>
+            </div>
+            <div class="divider"></div>
+            <div class="small">
+              <div><span class="muted">No:</span> <span class="mono">#${escapeHtml(txNo)}</span></div>
+              ${transaction.customerName ? `<div><span class="muted">Pelanggan:</span> <span class="mono">${escapeHtml(transaction.customerName)}</span></div>` : ''}
+              <div><span class="muted">Tanggal:</span> <span class="mono">${escapeHtml(dateText)}</span></div>
+            </div>
+            <div class="divider"></div>
+            ${itemsHtml}
           </div>
         </body>
       </html>
@@ -183,6 +251,26 @@ const TransactionsView = ({ mode }) => {
     if (!transaction) return
     const html = getReceiptHtml(transaction)
     const win = window.open('about:blank', 'dimsum_print', 'popup=yes,width=480,height=720')
+    if (!win) {
+      printViaIframe(html)
+      return
+    }
+    win.document.open()
+    win.document.write(html)
+    win.document.close()
+    try {
+      win.focus()
+      win.print()
+    } catch {
+      printViaIframe(html)
+    }
+  }
+
+  const openPrintOrderWindow = (transaction) => {
+    if (!transaction) return
+
+    const html = getOrderSlipHtml(transaction)
+    const win = window.open('about:blank', 'dimsum_order', 'popup=yes,width=480,height=720')
     if (!win) {
       printViaIframe(html)
       return
@@ -501,6 +589,13 @@ const TransactionsView = ({ mode }) => {
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-dimsum-dark text-white font-bold text-xs hover:bg-black"
                         >
                           <Printer size={14} /> Print Struk
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openPrintOrderWindow(t)}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-dimsum-red text-white font-bold text-xs hover:bg-red-700"
+                        >
+                          <Receipt size={14} /> Print Pesanan
                         </button>
                         {canDelete && (
                           <button

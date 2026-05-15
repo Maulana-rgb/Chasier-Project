@@ -25,9 +25,11 @@ const CashierView = ({ view = 'pos' }) => {
   const [closingCash, setClosingCash] = useState('')
   const [closeShiftSummary, setCloseShiftSummary] = useState(null)
   const [shiftNotice, setShiftNotice] = useState(null)
+  const [shiftBusy, setShiftBusy] = useState(null)
   const [couponCode, setCouponCode] = useState('')
   const [appliedCoupon, setAppliedCoupon] = useState(null)
   const [couponError, setCouponError] = useState('')
+  const [couponBusy, setCouponBusy] = useState(false)
   const [qrisBusy, setQrisBusy] = useState(false)
   const [qrisError, setQrisError] = useState('')
   const [qrisPayload, setQrisPayload] = useState('')
@@ -35,6 +37,7 @@ const CashierView = ({ view = 'pos' }) => {
   const [activePendingId, setActivePendingId] = useState(null)
   const [expandedPendingId, setExpandedPendingId] = useState(null)
   const [pendingBusy, setPendingBusy] = useState(null)
+  const [checkoutBusy, setCheckoutBusy] = useState(false)
 
   const toDigits = (value) => String(value || '').replace(/\D/g, '')
   const formatIdr = (digits) => digits ? Number(digits).toLocaleString('id-ID') : ''
@@ -216,7 +219,9 @@ const CashierView = ({ view = 'pos' }) => {
   const handleApplyCoupon = async () => {
     const code = String(couponCode || '').trim()
     if (!code) return
+    if (couponBusy) return
     setCouponError('')
+    setCouponBusy(true)
     try {
       const result = await previewCoupon({ code, subtotal })
       if (result?.valid) {
@@ -228,6 +233,8 @@ const CashierView = ({ view = 'pos' }) => {
     } catch (err) {
       setAppliedCoupon(null)
       setCouponError(getCouponErrorText(err?.data?.error || err?.message))
+    } finally {
+      setCouponBusy(false)
     }
   }
 
@@ -251,7 +258,7 @@ const CashierView = ({ view = 'pos' }) => {
     const footerLines = footerText ? footerText.split('\n').map(s => s.trim()).filter(Boolean) : []
     const headerHtml = headerLines.length
       ? headerLines.map((line, idx) => idx === 0
-        ? `<div class="bold">${escapeHtml(line)}</div>`
+        ? `<div class="bold header-main">${escapeHtml(line)}</div>`
         : `<div class="small muted">${escapeHtml(line)}</div>`
       ).join('')
       : ''
@@ -308,11 +315,12 @@ const CashierView = ({ view = 'pos' }) => {
             .bold { font-weight: 800; }
             .muted { color: #666; }
             .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-            .small { font-size: 12px; }
+            .small { font-size: 16px; }
+            .header-main { font-size: 18px; }
             .divider { border-top: 1px dashed #bbb; margin: 10px 0; }
             .row { display: flex; gap: 12px; align-items: flex-start; }
             .totals { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; }
-            .logo { display: block; margin: 0 auto 6px; width: 70px; height: auto; }
+            .logo { display: block; margin: 0 auto 6px; width: 130px; height: auto; }
             @media print { body { padding: 0; } .receipt { width: 80mm; } }
           </style>
         </head>
@@ -349,6 +357,74 @@ const CashierView = ({ view = 'pos' }) => {
               ${footerHtml}
             </div>
             ` : ''}
+          </div>
+        </body>
+      </html>
+    `
+  }
+
+  const getOrderSlipHtml = (transaction) => {
+    const itemsHtml = (transaction.items || []).map((item) => {
+      const qty = Number(item.qty || 0)
+      const note = String(item.note || '').trim()
+      const addOns = Array.isArray(item.addOns) ? item.addOns : []
+      const addOnsHtml = addOns.length > 0
+        ? `<div class="muted small">${addOns.map(a => `<div>+ ${escapeHtml(a?.name || '')}</div>`).join('')}</div>`
+        : ''
+      const noteHtml = note ? `<div class="muted small">${escapeHtml(note)}</div>` : ''
+
+      return `
+        <div class="row">
+          <div class="qty mono">${qty}</div>
+          <div style="flex:1;">
+            <div class="bold">${escapeHtml(item.name)}</div>
+            ${noteHtml}
+            ${addOnsHtml}
+          </div>
+        </div>
+        <div class="divider"></div>
+      `
+    }).join('')
+
+    const dateText = transaction.date ? new Date(transaction.date).toLocaleString('id-ID') : ''
+    const txNo = transaction.publicId || (transaction.id ? String(transaction.id).slice(-6) : '')
+
+    return `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Pesanan</title>
+          <style>
+            body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; padding: 16px; }
+            .receipt { width: 320px; margin: 0 auto; }
+            .center { text-align: center; }
+            .bold { font-weight: 800; }
+            .muted { color: #666; }
+            .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+            .small { font-size: 14px; }
+            .title { font-size: 20px; letter-spacing: 1px; }
+            .divider { border-top: 1px dashed #bbb; margin: 10px 0; }
+            .row { display: flex; gap: 12px; align-items: flex-start; }
+            .qty { width: 28px; text-align: right; font-size: 18px; font-weight: 800; }
+            .logo { display: block; margin: 0 auto 6px; width: 130px; height: auto; }
+            @media print { body { padding: 0; } .receipt { width: 80mm; } }
+          </style>
+        </head>
+        <body>
+          <div class="receipt">
+            <div class="center">
+              <div class="bold title">PESANAN</div>
+            </div>
+            <div class="divider"></div>
+            <div class="small">
+              <div><span class="muted">No:</span> <span class="mono">#${escapeHtml(txNo)}</span></div>
+              ${transaction.customerName ? `<div><span class="muted">Pelanggan:</span> <span class="mono">${escapeHtml(transaction.customerName)}</span></div>` : ''}
+              <div><span class="muted">Tanggal:</span> <span class="mono">${escapeHtml(dateText)}</span></div>
+            </div>
+            <div class="divider"></div>
+            ${itemsHtml}
           </div>
         </body>
       </html>
@@ -393,6 +469,26 @@ const CashierView = ({ view = 'pos' }) => {
 
     const html = getReceiptHtml(transaction)
     const win = window.open('about:blank', 'dimsum_print', 'popup=yes,width=480,height=720')
+    if (!win) {
+      printViaIframe(html)
+      return
+    }
+    win.document.open()
+    win.document.write(html)
+    win.document.close()
+    try {
+      win.focus()
+      win.print()
+    } catch {
+      printViaIframe(html)
+    }
+  }
+
+  const openPrintOrderWindow = (transaction) => {
+    if (!transaction) return
+
+    const html = getOrderSlipHtml(transaction)
+    const win = window.open('about:blank', 'dimsum_order', 'popup=yes,width=480,height=720')
     if (!win) {
       printViaIframe(html)
       return
@@ -519,6 +615,8 @@ const CashierView = ({ view = 'pos' }) => {
     if (cart.length === 0) return
     if (!paymentMethod) return
     if (!openShiftId) return
+    if (checkoutBusy) return
+    setCheckoutBusy(true)
 
     const itemsForTransaction = cart.map(item => ({
       id: item.menuId,
@@ -544,24 +642,33 @@ const CashierView = ({ view = 'pos' }) => {
       pendingOrderId: activePendingId,
     }
 
-    const created = await addTransaction(transaction)
-    setReceiptTransaction(created)
-    setShowReceipt(true)
-    setQrisBusy(false)
-    setQrisError('')
-    setQrisPayload('')
-    setQrisDataUrl('')
-    setActivePendingId(null)
-    setCart([])
-    setPaymentMethod('')
-    setCustomerName('')
-    setCashAmount('')
-    setCouponCode('')
-    setAppliedCoupon(null)
-    setCouponError('')
-    setExpandedItemId(null)
-    setShowSuccess(true)
-    setTimeout(() => setShowSuccess(false), 3000)
+    try {
+      const created = await addTransaction(transaction)
+      setReceiptTransaction(created)
+      setShowReceipt(true)
+      setQrisBusy(false)
+      setQrisError('')
+      setQrisPayload('')
+      setQrisDataUrl('')
+      setActivePendingId(null)
+      setCart([])
+      setPaymentMethod('')
+      setCustomerName('')
+      setCashAmount('')
+      setCouponCode('')
+      setAppliedCoupon(null)
+      setCouponError('')
+      setExpandedItemId(null)
+      setShowSuccess(true)
+      setTimeout(() => setShowSuccess(false), 3000)
+    } catch (err) {
+      setShiftNotice({
+        title: 'Gagal Proses Transaksi',
+        message: err?.data?.error || err?.message || 'Terjadi kesalahan saat memproses transaksi.',
+      })
+    } finally {
+      setCheckoutBusy(false)
+    }
   }
 
   const requestOpenShift = useCallback(() => {
@@ -750,26 +857,26 @@ const CashierView = ({ view = 'pos' }) => {
     <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
       {/* Menu List */}
       <div className="lg:col-span-2 space-y-6">
-        <div className="flex justify-between items-center">
-          <h3 className="text-2xl font-bold text-dimsum-dark">Menu Dimsum</h3>
-          <div className="relative">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <h3 className="text-xl sm:text-2xl font-bold text-dimsum-dark">Menu Dimsum</h3>
+          <div className="relative w-full sm:w-80">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
             <input 
               type="text" 
               placeholder="Cari menu..." 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-dimsum-red outline-none"
+              className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-dimsum-red outline-none"
             />
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
           <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Kategori</span>
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
-            className="p-2 border rounded-lg text-sm"
+            className="w-full sm:w-72 p-2 border rounded-lg text-sm"
           >
             <option value="Semua">Semua</option>
             {(categories || [...new Set(menus.map(m => m.category))]).map((c) => (
@@ -820,7 +927,7 @@ const CashierView = ({ view = 'pos' }) => {
               const selected = getSelectedAddOns(item.selectedAddOnIds || [])
               const lineTotal = getUnitPrice(item) * item.qty
               return (
-              <div key={item.lineId} className="p-3 border border-gray-100 rounded-xl bg-white">
+              <div key={item.lineId} className="p-4 border border-gray-100 rounded-xl bg-white">
                 <div className="flex justify-between gap-3">
                   <div className="flex-1">
                     <p className="font-bold text-sm">{item.name}</p>
@@ -835,14 +942,34 @@ const CashierView = ({ view = 'pos' }) => {
                       className="mt-2 w-full p-2 border rounded-lg text-sm focus:ring-2 focus:ring-dimsum-red outline-none"
                     />
                   </div>
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center border rounded-lg overflow-hidden">
-                      <button onClick={() => updateQty(item.lineId, -1)} className="px-2 py-1 bg-gray-50 hover:bg-gray-100">-</button>
-                      <span className="px-3 py-1 text-sm font-bold">{item.qty}</span>
-                      <button onClick={() => updateQty(item.lineId, 1)} className="px-2 py-1 bg-gray-50 hover:bg-gray-100">+</button>
+                  <div className="flex flex-col items-end gap-2">
+                    <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => updateQty(item.lineId, -1)}
+                        className="w-12 h-12 bg-gray-50 hover:bg-gray-100 text-lg font-black flex items-center justify-center"
+                      >
+                        -
+                      </button>
+                      <span className="w-12 h-12 text-base font-black flex items-center justify-center">
+                        {item.qty}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => updateQty(item.lineId, 1)}
+                        className="w-12 h-12 bg-gray-50 hover:bg-gray-100 text-lg font-black flex items-center justify-center"
+                      >
+                        +
+                      </button>
                     </div>
-                    <button onClick={() => removeFromCart(item.lineId)} className="text-red-500 hover:text-red-700">
-                      <Trash2 size={16} />
+                    <button
+                      type="button"
+                      onClick={() => removeFromCart(item.lineId)}
+                      className="w-12 h-12 rounded-xl border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition-all flex items-center justify-center"
+                      aria-label="Hapus item"
+                      title="Hapus item"
+                    >
+                      <Trash2 size={18} />
                     </button>
                   </div>
                 </div>
@@ -960,10 +1087,17 @@ const CashierView = ({ view = 'pos' }) => {
                 <button
                   type="button"
                   onClick={handleApplyCoupon}
-                  disabled={!couponCode.trim() || cart.length === 0}
-                  className="px-4 rounded-lg border-2 border-dimsum-red font-bold text-dimsum-red hover:bg-red-50 disabled:border-gray-200 disabled:text-gray-300 disabled:hover:bg-transparent"
+                  disabled={couponBusy || !couponCode.trim() || cart.length === 0}
+                  className="px-4 rounded-lg border-2 border-dimsum-red font-bold text-dimsum-red hover:bg-red-50 disabled:border-gray-200 disabled:text-gray-300 disabled:hover:bg-transparent flex items-center justify-center gap-2"
                 >
-                  Apply
+                  {couponBusy ? (
+                    <>
+                      <div className="w-4 h-4 rounded-full border-2 border-dimsum-red/40 border-t-dimsum-red animate-spin" />
+                      Apply...
+                    </>
+                  ) : (
+                    'Apply'
+                  )}
                 </button>
               )}
             </div>
@@ -1018,16 +1152,23 @@ const CashierView = ({ view = 'pos' }) => {
           
           <button 
             onClick={handleCheckout}
-            disabled={cart.length === 0 || !paymentMethod || !openShiftId || (paymentMethod === 'Cash' && (Number(cashAmount) < total || !cashAmount))}
-            className="w-full bg-dimsum-red text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-red-700 transition-all disabled:bg-gray-300 disabled:shadow-none mt-4"
+            disabled={checkoutBusy || cart.length === 0 || !paymentMethod || !openShiftId || (paymentMethod === 'Cash' && (Number(cashAmount) < total || !cashAmount))}
+            className="w-full bg-dimsum-red text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-red-700 transition-all disabled:bg-gray-300 disabled:shadow-none mt-4 flex items-center justify-center gap-2"
           >
-            {!openShiftId && cart.length > 0
-              ? 'Buka Shift Dulu'
-              : !paymentMethod && cart.length > 0
-                ? 'Pilih Pembayaran'
-                : paymentMethod === 'Cash' && Number(cashAmount) < total
-                  ? 'Uang Kurang'
-                  : 'Bayar Sekarang'}
+            {checkoutBusy ? (
+              <>
+                <div className="w-5 h-5 rounded-full border-2 border-white/50 border-t-white animate-spin" />
+                Memproses...
+              </>
+            ) : (
+              (!openShiftId && cart.length > 0
+                ? 'Buka Shift Dulu'
+                : !paymentMethod && cart.length > 0
+                  ? 'Pilih Pembayaran'
+                  : paymentMethod === 'Cash' && Number(cashAmount) < total
+                    ? 'Uang Kurang'
+                    : 'Bayar Sekarang')
+            )}
           </button>
 
           <button
@@ -1181,19 +1322,6 @@ const CashierView = ({ view = 'pos' }) => {
                   {qrisDataUrl && (
                     <div className="bg-white rounded-xl border border-gray-100 p-4 flex flex-col items-center gap-3">
                       <img src={qrisDataUrl} alt="QRIS" className="w-64 h-64 object-contain" />
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(String(qrisPayload || ''))
-                          } catch {
-                            // ignore
-                          }
-                        }}
-                        className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold text-sm hover:bg-gray-200"
-                      >
-                        Copy QRIS String
-                      </button>
                     </div>
                   )}
                 </div>
@@ -1201,20 +1329,27 @@ const CashierView = ({ view = 'pos' }) => {
             </div>
 
             <div className="p-6 border-t bg-white">
-              <div className="flex gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={() => openPrintWindow(receiptTransaction)}
-                  className="flex-1 bg-dimsum-red text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-red-700 transition-all"
+                  className="bg-dimsum-red text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-red-700 transition-all"
                 >
                   Print Struk
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openPrintOrderWindow(receiptTransaction)}
+                  className="bg-dimsum-dark text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-black transition-all"
+                >
+                  Print Pesanan
                 </button>
                 {receiptTransaction.paymentMethod === 'QRIS' && (
                   <button
                     type="button"
                     onClick={handleGenerateQris}
                     disabled={qrisBusy}
-                    className="px-4 py-4 rounded-xl bg-dimsum-dark text-white font-bold shadow-lg hover:bg-black transition-all disabled:opacity-50"
+                    className="sm:col-span-2 px-4 py-4 rounded-xl bg-gray-100 text-gray-700 font-bold shadow-lg hover:bg-gray-200 transition-all disabled:opacity-50"
                   >
                     QRIS
                   </button>
@@ -1300,6 +1435,7 @@ const CashierView = ({ view = 'pos' }) => {
                   inputMode="numeric"
                   value={formatIdr(openingBalance)}
                   onChange={(e) => setOpeningBalance(toDigits(e.target.value))}
+                  disabled={shiftBusy?.type === 'open'}
                   className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red font-mono"
                   placeholder="0"
                 />
@@ -1308,18 +1444,38 @@ const CashierView = ({ view = 'pos' }) => {
                 <button
                   type="button"
                   onClick={async () => {
-                    await openShift(openingBalance)
-                    setOpeningBalance('')
-                    setShowOpenShift(false)
+                    if (shiftBusy) return
+                    setShiftBusy({ type: 'open' })
+                    try {
+                      await openShift(openingBalance)
+                      setOpeningBalance('')
+                      setShowOpenShift(false)
+                    } catch (err) {
+                      setShiftNotice({
+                        title: 'Gagal Buka Shift',
+                        message: err?.data?.error || err?.message || 'Terjadi kesalahan saat membuka shift.',
+                      })
+                    } finally {
+                      setShiftBusy(null)
+                    }
                   }}
-                  className="flex-1 bg-dimsum-red text-white py-3 rounded-xl font-bold hover:bg-red-700 transition-all"
+                  disabled={shiftBusy?.type === 'open'}
+                  className="flex-1 bg-dimsum-red text-white py-3 rounded-xl font-bold hover:bg-red-700 transition-all disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Simpan
+                  {shiftBusy?.type === 'open' ? (
+                    <>
+                      <div className="w-4 h-4 rounded-full border-2 border-white/50 border-t-white animate-spin" />
+                      Menyimpan...
+                    </>
+                  ) : (
+                    'Simpan'
+                  )}
                 </button>
                 <button
                   type="button"
                   onClick={() => { setShowOpenShift(false); setOpeningBalance('') }}
-                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-200 transition-all"
+                  disabled={shiftBusy?.type === 'open'}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   Batal
                 </button>
@@ -1351,6 +1507,7 @@ const CashierView = ({ view = 'pos' }) => {
                   inputMode="numeric"
                   value={formatIdr(closingCash)}
                   onChange={(e) => setClosingCash(toDigits(e.target.value))}
+                  disabled={shiftBusy?.type === 'close'}
                   className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-dimsum-red font-mono"
                   placeholder="0"
                 />
@@ -1360,26 +1517,45 @@ const CashierView = ({ view = 'pos' }) => {
                 <button
                   type="button"
                   onClick={async () => {
-                    const summary = await closeShift(closingCash)
-                    setClosingCash('')
-                    setShowCloseShift(false)
-                    setCloseShiftSummary(summary)
-                    setCart([])
-                    setPaymentMethod('')
-                    setCustomerName('')
-                    setCashAmount('')
-                    setExpandedItemId(null)
-                    setPendingAddOnAction(null)
+                    if (shiftBusy) return
+                    setShiftBusy({ type: 'close' })
+                    try {
+                      const summary = await closeShift(closingCash)
+                      setClosingCash('')
+                      setShowCloseShift(false)
+                      setCloseShiftSummary(summary)
+                      setCart([])
+                      setPaymentMethod('')
+                      setCustomerName('')
+                      setCashAmount('')
+                      setExpandedItemId(null)
+                      setPendingAddOnAction(null)
+                    } catch (err) {
+                      setShiftNotice({
+                        title: 'Gagal Tutup Shift',
+                        message: err?.data?.error || err?.message || 'Terjadi kesalahan saat menutup shift.',
+                      })
+                    } finally {
+                      setShiftBusy(null)
+                    }
                   }}
-                  disabled={!closingCash}
-                  className="flex-1 bg-dimsum-dark text-white py-3 rounded-xl font-bold hover:bg-black transition-all disabled:bg-gray-300"
+                  disabled={!closingCash || shiftBusy?.type === 'close'}
+                  className="flex-1 bg-dimsum-dark text-white py-3 rounded-xl font-bold hover:bg-black transition-all disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Tutup Shift
+                  {shiftBusy?.type === 'close' ? (
+                    <>
+                      <div className="w-4 h-4 rounded-full border-2 border-white/50 border-t-white animate-spin" />
+                      Memproses...
+                    </>
+                  ) : (
+                    'Tutup Shift'
+                  )}
                 </button>
                 <button
                   type="button"
                   onClick={() => { setShowCloseShift(false); setClosingCash('') }}
-                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-200 transition-all"
+                  disabled={shiftBusy?.type === 'close'}
+                  className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   Batal
                 </button>
