@@ -369,14 +369,14 @@ const CashierView = ({ view = 'pos' }) => {
       const note = String(item.note || '').trim()
       const addOns = Array.isArray(item.addOns) ? item.addOns : []
       const addOnsHtml = addOns.length > 0
-        ? `<div class="muted small">${addOns.map(a => `<div>+ ${escapeHtml(a?.name || '')}</div>`).join('')}</div>`
+        ? `<div class="bold">${addOns.map(a => `<div>+ ${escapeHtml(a?.name || '')}</div>`).join('')}</div>`
         : ''
-      const noteHtml = note ? `<div class="muted small">${escapeHtml(note)}</div>` : ''
+      const noteHtml = note ? `<div class="bold">${escapeHtml(note)}</div>` : ''
 
       return `
         <div class="row">
           <div class="qty mono">${qty}</div>
-          <div style="flex:1;">
+          <div class="item" style="flex:1;">
             <div class="bold">${escapeHtml(item.name)}</div>
             ${noteHtml}
             ${addOnsHtml}
@@ -403,11 +403,12 @@ const CashierView = ({ view = 'pos' }) => {
             .bold { font-weight: 800; }
             .muted { color: #666; }
             .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-            .small { font-size: 14px; }
+            .small { font-size: 20px; }
             .title { font-size: 20px; letter-spacing: 1px; }
             .divider { border-top: 1px dashed #bbb; margin: 10px 0; }
             .row { display: flex; gap: 12px; align-items: flex-start; }
-            .qty { width: 28px; text-align: right; font-size: 18px; font-weight: 800; }
+            .qty { width: 28px; text-align: right; font-size: 20px; font-weight: 800; }
+            .item { font-size: 20px; }
             .logo { display: block; margin: 0 auto 6px; width: 130px; height: auto; }
             @media print { body { padding: 0; } .receipt { width: 80mm; } }
           </style>
