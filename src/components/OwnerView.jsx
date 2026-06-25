@@ -77,7 +77,7 @@ const OwnerView = () => {
   const [ownerPasswordStatus, setOwnerPasswordStatus] = useState('')
 
   const [isAddingCoupon, setIsAddingCoupon] = useState(false)
-  const [newCoupon, setNewCoupon] = useState({ code: '', type: 'amount', value: '', isRepeatable: false, maxUses: '', validFrom: '', validTo: '' })
+  const [newCoupon, setNewCoupon] = useState({ code: '', type: 'amount', value: '', maxDiscount: '', isRepeatable: false, maxUses: '', validFrom: '', validTo: '' })
   const [couponError, setCouponError] = useState('')
 
   const [activeTab, setActiveTab] = useState('menu')
@@ -254,6 +254,9 @@ const OwnerView = () => {
     const code = String(newCoupon.code || '').trim()
     const value = Number(String(newCoupon.value || '').replace(/\D/g, '')) || Number(newCoupon.value) || 0
     const maxUses = Number(String(newCoupon.maxUses || '').replace(/\D/g, '')) || Number(newCoupon.maxUses) || 0
+    const maxDiscount = newCoupon.type === 'percent' && newCoupon.maxDiscount
+      ? (Number(String(newCoupon.maxDiscount || '').replace(/\D/g, '')) || null)
+      : null
     if (!code || !value) return
     if (newCoupon.isRepeatable && maxUses < 1) return
     try {
@@ -264,10 +267,11 @@ const OwnerView = () => {
         active: true,
         isRepeatable: Boolean(newCoupon.isRepeatable),
         maxUses: newCoupon.isRepeatable ? maxUses : 1,
+        maxDiscount,
         validFrom: newCoupon.validFrom ? newCoupon.validFrom : null,
         validTo: newCoupon.validTo ? newCoupon.validTo : null,
       })
-      setNewCoupon({ code: '', type: 'amount', value: '', isRepeatable: false, maxUses: '', validFrom: '', validTo: '' })
+      setNewCoupon({ code: '', type: 'amount', value: '', maxDiscount: '', isRepeatable: false, maxUses: '', validFrom: '', validTo: '' })
       setIsAddingCoupon(false)
     } catch (err) {
       setCouponError(err?.data?.error || err?.message || 'Gagal membuat kupon')
@@ -394,83 +398,104 @@ const OwnerView = () => {
         )}
 
         {isAddingCoupon && (
-          <form onSubmit={handleCreateCoupon} className="mb-8 p-4 bg-gray-50 rounded-lg grid grid-cols-1 md:grid-cols-7 gap-4 items-end">
-            <div>
-              <label className="block text-sm font-medium mb-1">Kode</label>
-              <input
-                type="text"
-                value={newCoupon.code}
-                onChange={(e) => setNewCoupon({ ...newCoupon, code: e.target.value })}
-                className="w-full p-2 border rounded"
-                placeholder="misal: DISKON10"
-              />
+          <form onSubmit={handleCreateCoupon} className="mb-8 p-5 bg-gray-50 rounded-xl border border-gray-200 space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Kode</label>
+                <input
+                  type="text"
+                  value={newCoupon.code}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, code: e.target.value })}
+                  className="w-full p-2 border rounded"
+                  placeholder="misal: DISKON10"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Tipe</label>
+                <select
+                  value={newCoupon.type}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, type: e.target.value, maxDiscount: '' })}
+                  className="w-full p-2 border rounded"
+                >
+                  <option value="amount">Potongan (Rp)</option>
+                  <option value="percent">Persen (%)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Nilai{newCoupon.type === 'percent' ? ' (%)' : ' (Rp)'}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={newCoupon.value}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, value: e.target.value })}
+                  className="w-full p-2 border rounded"
+                  placeholder={newCoupon.type === 'percent' ? '10' : '5000'}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Maks. Potongan (Rp)
+                  {newCoupon.type !== 'percent' && <span className="text-gray-400 font-normal"> —</span>}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  disabled={newCoupon.type !== 'percent'}
+                  value={newCoupon.maxDiscount}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, maxDiscount: e.target.value })}
+                  className={`w-full p-2 border rounded ${newCoupon.type !== 'percent' ? 'bg-gray-100 text-gray-400' : ''}`}
+                  placeholder={newCoupon.type === 'percent' ? 'Opsional, misal: 50000' : '-'}
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Tipe</label>
-              <select
-                value={newCoupon.type}
-                onChange={(e) => setNewCoupon({ ...newCoupon, type: e.target.value })}
-                className="w-full p-2 border rounded"
-              >
-                <option value="amount">Potongan (Rp)</option>
-                <option value="percent">Persen (%)</option>
-              </select>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Pemakaian</label>
+                <select
+                  value={newCoupon.isRepeatable ? 'repeat' : 'once'}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, isRepeatable: e.target.value === 'repeat', maxUses: e.target.value === 'repeat' ? (newCoupon.maxUses || '2') : '' })}
+                  className="w-full p-2 border rounded"
+                >
+                  <option value="once">Sekali</option>
+                  <option value="repeat">Berulang</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Batas Pakai</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  disabled={!newCoupon.isRepeatable}
+                  value={newCoupon.maxUses}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, maxUses: e.target.value })}
+                  className={`w-full p-2 border rounded ${newCoupon.isRepeatable ? '' : 'bg-gray-100 text-gray-500'}`}
+                  placeholder={newCoupon.isRepeatable ? 'misal: 20' : '-'}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Mulai</label>
+                <input
+                  type="datetime-local"
+                  value={newCoupon.validFrom}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, validFrom: e.target.value })}
+                  className="w-full p-2 border rounded"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Sampai</label>
+                <input
+                  type="datetime-local"
+                  value={newCoupon.validTo}
+                  onChange={(e) => setNewCoupon({ ...newCoupon, validTo: e.target.value })}
+                  className="w-full p-2 border rounded"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Nilai</label>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={newCoupon.value}
-                onChange={(e) => setNewCoupon({ ...newCoupon, value: e.target.value })}
-                className="w-full p-2 border rounded"
-                placeholder={newCoupon.type === 'percent' ? '10' : '5000'}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Pemakaian</label>
-              <select
-                value={newCoupon.isRepeatable ? 'repeat' : 'once'}
-                onChange={(e) => setNewCoupon({ ...newCoupon, isRepeatable: e.target.value === 'repeat', maxUses: e.target.value === 'repeat' ? (newCoupon.maxUses || '2') : '' })}
-                className="w-full p-2 border rounded"
-              >
-                <option value="once">Sekali</option>
-                <option value="repeat">Berulang</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Batas Pakai</label>
-              <input
-                type="text"
-                inputMode="numeric"
-                disabled={!newCoupon.isRepeatable}
-                value={newCoupon.maxUses}
-                onChange={(e) => setNewCoupon({ ...newCoupon, maxUses: e.target.value })}
-                className={`w-full p-2 border rounded ${newCoupon.isRepeatable ? '' : 'bg-gray-100 text-gray-500'}`}
-                placeholder={newCoupon.isRepeatable ? 'misal: 20' : '-'}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Mulai</label>
-              <input
-                type="datetime-local"
-                value={newCoupon.validFrom}
-                onChange={(e) => setNewCoupon({ ...newCoupon, validFrom: e.target.value })}
-                className="w-full p-2 border rounded"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Sampai</label>
-              <input
-                type="datetime-local"
-                value={newCoupon.validTo}
-                onChange={(e) => setNewCoupon({ ...newCoupon, validTo: e.target.value })}
-                className="w-full p-2 border rounded"
-              />
-            </div>
-            <div className="md:col-span-7 flex gap-2">
-              <button type="submit" className="flex-1 bg-dimsum-red text-white p-2 rounded hover:bg-red-700">Simpan</button>
-              <button type="button" onClick={() => setIsAddingCoupon(false)} className="flex-1 bg-gray-400 text-white p-2 rounded hover:bg-gray-500">Batal</button>
+            <div className="flex gap-3 pt-1">
+              <button type="submit" className="flex-1 bg-dimsum-red text-white py-2 rounded-lg hover:bg-red-700 font-medium transition-colors">Simpan</button>
+              <button type="button" onClick={() => setIsAddingCoupon(false)} className="flex-1 bg-gray-400 text-white py-2 rounded-lg hover:bg-gray-500 font-medium transition-colors">Batal</button>
             </div>
           </form>
         )}
@@ -482,6 +507,7 @@ const OwnerView = () => {
                 <th className="py-3 px-4 text-left">Kode</th>
                 <th className="py-3 px-4 text-left">Tipe</th>
                 <th className="py-3 px-4 text-left">Nilai</th>
+                <th className="py-3 px-4 text-left">Maks. Potongan</th>
                 <th className="py-3 px-4 text-left">Pakai</th>
                 <th className="py-3 px-4 text-left">Mulai</th>
                 <th className="py-3 px-4 text-left">Sampai</th>
@@ -506,6 +532,11 @@ const OwnerView = () => {
                     <td className="py-3 px-4">{c.type === 'percent' ? 'Persen' : 'Potongan'}</td>
                     <td className="py-3 px-4">
                       {c.type === 'percent' ? `${c.value}%` : `Rp ${Number(c.value || 0).toLocaleString('id-ID')}`}
+                    </td>
+                    <td className="py-3 px-4">
+                      {c.type === 'percent' && c.maxDiscount
+                        ? `Rp ${Number(c.maxDiscount).toLocaleString('id-ID')}`
+                        : <span className="text-gray-400">-</span>}
                     </td>
                     <td className="py-3 px-4">{`${usedCount}/${maxUses}`}</td>
                     <td className="py-3 px-4">{c.validFrom ? new Date(c.validFrom).toLocaleString('id-ID') : '-'}</td>

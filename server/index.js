@@ -18,6 +18,7 @@ const dbConfig = {
 }
 
 const sessionSecret = process.env.SESSION_SECRET || 'dev-secret-change-me'
+const isSecureCookie = Boolean(process.env.COOKIE_SECURE) || process.env.NODE_ENV === 'production'
 
 const pool = mysql.createPool(dbConfig)
 const MySQLStore = MySQLStoreFactory(session)
@@ -40,6 +41,7 @@ const sessionStore = new MySQLStore(
 )
 
 const app = express()
+app.set('trust proxy', 1)
 app.disable('x-powered-by')
 const corsOrigins = String(process.env.CORS_ORIGIN || '')
   .split(',')
@@ -73,8 +75,8 @@ app.use(
     store: sessionStore,
     cookie: {
       httpOnly: true,
-      sameSite: 'lax',
-      secure: Boolean(process.env.COOKIE_SECURE) || process.env.NODE_ENV === 'production',
+      sameSite: isSecureCookie ? 'none' : 'lax',
+      secure: isSecureCookie,
       maxAge: 1000 * 60 * 60 * 24 * 7,
     },
   })
@@ -439,6 +441,7 @@ const ensureSchema = async () => {
   await addColumnIfMissing('coupons', 'is_repeatable', '`is_repeatable` TINYINT(1) NOT NULL DEFAULT 0')
   await addColumnIfMissing('coupons', 'max_uses', '`max_uses` INT NOT NULL DEFAULT 1')
   await addColumnIfMissing('coupons', 'used_count', '`used_count` INT NOT NULL DEFAULT 0')
+  await addColumnIfMissing('coupons', 'max_discount', '`max_discount` INT NULL DEFAULT NULL')
 
   await pool.query(`
     UPDATE coupons
@@ -946,20 +949,23 @@ app.post('/api/users/:id/reset-password', requireDb, requireOwner, async (req, r
 
 const normalizeCouponCode = (code) => String(code || '').trim().toUpperCase()
 
-const computeCouponDiscount = ({ type, value, subtotal }) => {
+const computeCouponDiscount = ({ type, value, subtotal, maxDiscount }) => {
   const st = Math.max(0, Number(subtotal) || 0)
   const v = Math.max(0, Number(value) || 0)
   if (st === 0) return 0
   if (type === 'percent') {
     const pct = Math.min(100, v)
-    return Math.min(st, Math.round((st * pct) / 100))
+    let discount = Math.min(st, Math.round((st * pct) / 100))
+    const cap = maxDiscount !== null && maxDiscount !== undefined ? Math.max(0, Number(maxDiscount) || 0) : 0
+    if (cap > 0) discount = Math.min(discount, cap)
+    return discount
   }
   return Math.min(st, v)
 }
 
 app.get('/api/coupons', requireDb, requireOwner, async (req, res) => {
   const [rows] = await pool.query(
-    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to, used_at, used_transaction_id, created_at
+    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, max_discount, valid_from, valid_to, used_at, used_transaction_id, created_at
      FROM coupons
      ORDER BY created_at DESC, id DESC`
   )
@@ -973,6 +979,7 @@ app.get('/api/coupons', requireDb, requireOwner, async (req, res) => {
       isRepeatable: Boolean(r.is_repeatable),
       maxUses: Number(r.max_uses) || 1,
       usedCount: Number(r.used_count) || 0,
+      maxDiscount: r.max_discount === null ? null : Number(r.max_discount) || null,
       validFrom: r.valid_from ? new Date(r.valid_from).toISOString() : null,
       validTo: r.valid_to ? new Date(r.valid_to).toISOString() : null,
       usedAt: r.used_at ? new Date(r.used_at).toISOString() : null,
@@ -995,6 +1002,10 @@ app.post('/api/coupons', requireDb, requireOwner, async (req, res) => {
   const validToRaw = req.body?.validTo ?? null
   const validFrom = validFromRaw ? new Date(validFromRaw) : null
   const validTo = validToRaw ? new Date(validToRaw) : null
+  const maxDiscountRaw = req.body?.maxDiscount ?? req.body?.max_discount ?? null
+  const maxDiscount = (type === 'percent' && maxDiscountRaw !== null && maxDiscountRaw !== undefined)
+    ? (Math.max(0, Number(maxDiscountRaw) || 0) || null)
+    : null
 
   if (!code) return res.status(400).json({ error: 'INVALID_INPUT' })
   if (type !== 'amount' && type !== 'percent') return res.status(400).json({ error: 'INVALID_INPUT' })
@@ -1008,8 +1019,8 @@ app.post('/api/coupons', requireDb, requireOwner, async (req, res) => {
 
   try {
     await pool.query(
-      `INSERT INTO coupons (code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to)
-       VALUES (:c,:t,:v,:a,:ir,:mu,0,:vf,:vt)`,
+      `INSERT INTO coupons (code, type, value, active, is_repeatable, max_uses, used_count, max_discount, valid_from, valid_to)
+       VALUES (:c,:t,:v,:a,:ir,:mu,0,:md,:vf,:vt)`,
       {
         c: code,
         t: type,
@@ -1017,6 +1028,7 @@ app.post('/api/coupons', requireDb, requireOwner, async (req, res) => {
         a: active,
         ir: isRepeatable ? 1 : 0,
         mu: Math.max(1, Math.round(maxUses)),
+        md: maxDiscount,
         vf: validFrom ? validFrom : null,
         vt: validTo ? validTo : null,
       }
@@ -1027,7 +1039,7 @@ app.post('/api/coupons', requireDb, requireOwner, async (req, res) => {
   }
 
   const [rows] = await pool.query(
-    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to, used_at, used_transaction_id, created_at
+    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, max_discount, valid_from, valid_to, used_at, used_transaction_id, created_at
      FROM coupons
      ORDER BY created_at DESC, id DESC`
   )
@@ -1041,6 +1053,7 @@ app.post('/api/coupons', requireDb, requireOwner, async (req, res) => {
       isRepeatable: Boolean(r.is_repeatable),
       maxUses: Number(r.max_uses) || 1,
       usedCount: Number(r.used_count) || 0,
+      maxDiscount: r.max_discount === null ? null : Number(r.max_discount) || null,
       validFrom: r.valid_from ? new Date(r.valid_from).toISOString() : null,
       validTo: r.valid_to ? new Date(r.valid_to).toISOString() : null,
       usedAt: r.used_at ? new Date(r.used_at).toISOString() : null,
@@ -1063,8 +1076,10 @@ app.patch('/api/coupons/:id', requireDb, requireOwner, async (req, res) => {
   const validToRaw = req.body?.validTo ?? undefined
   const validFrom = validFromRaw === undefined ? undefined : (validFromRaw ? new Date(validFromRaw) : null)
   const validTo = validToRaw === undefined ? undefined : (validToRaw ? new Date(validToRaw) : null)
+  const maxDiscountRaw = req.body?.maxDiscount ?? req.body?.max_discount
+  const maxDiscount = maxDiscountRaw === undefined ? undefined : (maxDiscountRaw === null ? null : Math.max(0, Number(maxDiscountRaw) || 0) || null)
 
-  if (active === undefined && isRepeatableRaw === undefined && maxUsesRaw === undefined && validFromRaw === undefined && validToRaw === undefined) {
+  if (active === undefined && isRepeatableRaw === undefined && maxUsesRaw === undefined && validFromRaw === undefined && validToRaw === undefined && maxDiscountRaw === undefined) {
     return res.status(400).json({ error: 'INVALID_INPUT' })
   }
   if (maxUsesRaw !== undefined && (!Number.isFinite(maxUses) || maxUses < 1)) return res.status(400).json({ error: 'INVALID_INPUT' })
@@ -1103,10 +1118,14 @@ app.patch('/api/coupons/:id', requireDb, requireOwner, async (req, res) => {
     updates.push('valid_to = :vt')
     params.vt = validTo === undefined ? null : validTo
   }
+  if (maxDiscountRaw !== undefined) {
+    updates.push('max_discount = :md')
+    params.md = maxDiscount
+  }
   await pool.query(`UPDATE coupons SET ${updates.join(', ')} WHERE id = :id`, params)
 
   const [list] = await pool.query(
-    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, valid_from, valid_to, used_at, used_transaction_id, created_at
+    `SELECT id, code, type, value, active, is_repeatable, max_uses, used_count, max_discount, valid_from, valid_to, used_at, used_transaction_id, created_at
      FROM coupons
      ORDER BY created_at DESC, id DESC`
   )
@@ -1120,6 +1139,7 @@ app.patch('/api/coupons/:id', requireDb, requireOwner, async (req, res) => {
       isRepeatable: Boolean(r.is_repeatable),
       maxUses: Number(r.max_uses) || 1,
       usedCount: Number(r.used_count) || 0,
+      maxDiscount: r.max_discount === null ? null : Number(r.max_discount) || null,
       validFrom: r.valid_from ? new Date(r.valid_from).toISOString() : null,
       validTo: r.valid_to ? new Date(r.valid_to).toISOString() : null,
       usedAt: r.used_at ? new Date(r.used_at).toISOString() : null,
@@ -1135,7 +1155,7 @@ app.post('/api/coupons/preview', requireDb, requireAuth, async (req, res) => {
   if (!code) return res.status(400).json({ error: 'INVALID_INPUT' })
 
   const [rows] = await pool.query(
-    `SELECT id, type, value, active, max_uses, used_count, valid_from, valid_to
+    `SELECT id, type, value, active, max_uses, used_count, max_discount, valid_from, valid_to
      FROM coupons
      WHERE code = :c
      LIMIT 1`,
@@ -1153,7 +1173,7 @@ app.post('/api/coupons/preview', requireDb, requireAuth, async (req, res) => {
   if (c.valid_from && new Date(c.valid_from).getTime() > now) return res.json({ valid: false, error: 'COUPON_NOT_YET_VALID' })
   if (c.valid_to && new Date(c.valid_to).getTime() < now) return res.json({ valid: false, error: 'COUPON_EXPIRED' })
 
-  const discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal })
+  const discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal, maxDiscount: c.max_discount ?? null })
   const total = Math.max(0, subtotal - discountAmount)
   res.json({ valid: true, code, discountAmount, total })
 })
@@ -1407,7 +1427,7 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
     let appliedCouponId = null
     if (couponCode) {
       const [cRows] = await conn.query(
-        `SELECT id, type, value, active, max_uses, used_count, valid_from, valid_to
+        `SELECT id, type, value, active, max_uses, used_count, max_discount, valid_from, valid_to
          FROM coupons
          WHERE code = :c
          LIMIT 1
@@ -1423,7 +1443,7 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
       const now = Date.now()
       if (c.valid_from && new Date(c.valid_from).getTime() > now) throw { status: 409, error: 'COUPON_NOT_YET_VALID' }
       if (c.valid_to && new Date(c.valid_to).getTime() < now) throw { status: 409, error: 'COUPON_EXPIRED' }
-      discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal })
+      discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal, maxDiscount: c.max_discount ?? null })
       appliedCouponId = Number(c.id)
     }
 
@@ -1514,7 +1534,7 @@ app.post('/api/transactions', requireDb, requireAuth, async (req, res) => {
   }
 })
 
-app.patch('/api/transactions/:id/delete', requireDb, requireOwner, async (req, res) => {
+app.delete('/api/transactions/:id', requireDb, requireOwner, async (req, res) => {
   const txId = Number(req.params.id)
   if (!txId) return res.status(400).json({ error: 'INVALID_INPUT' })
 
@@ -1645,7 +1665,7 @@ app.post('/api/pending-orders', requireDb, requireAuth, async (req, res) => {
   let discountAmount = 0
   if (couponCode) {
     const [rows] = await pool.query(
-      `SELECT id, type, value, active, max_uses, used_count, valid_from, valid_to
+      `SELECT id, type, value, active, max_uses, used_count, max_discount, valid_from, valid_to
        FROM coupons
        WHERE code = :c
        LIMIT 1`,
@@ -1660,7 +1680,7 @@ app.post('/api/pending-orders', requireDb, requireAuth, async (req, res) => {
     const now = Date.now()
     if (c.valid_from && new Date(c.valid_from).getTime() > now) return res.status(409).json({ error: 'COUPON_NOT_YET_VALID' })
     if (c.valid_to && new Date(c.valid_to).getTime() < now) return res.status(409).json({ error: 'COUPON_EXPIRED' })
-    discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal })
+    discountAmount = computeCouponDiscount({ type: c.type, value: c.value, subtotal, maxDiscount: c.max_discount ?? null })
   }
   const total = Math.max(0, subtotal - discountAmount)
 

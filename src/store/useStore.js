@@ -277,7 +277,7 @@ export const useStore = create((set, get) => ({
   deleteTransaction: async (id) => {
     const txId = Number(id)
     if (!txId) return false
-    const data = await apiRequest(`/api/transactions/${encodeURIComponent(txId)}/delete`, { method: 'PATCH' })
+    const data = await apiRequest(`/api/transactions/${encodeURIComponent(txId)}`, { method: 'DELETE' })
     get().hydrateFromBootstrap(data)
     return true
   },
@@ -307,7 +307,7 @@ export const useStore = create((set, get) => ({
     set({ coupons: data.coupons || [] })
   },
 
-  createCoupon: async ({ code, type, value, active, validFrom, validTo, isRepeatable, maxUses }) => {
+  createCoupon: async ({ code, type, value, active, validFrom, validTo, isRepeatable, maxUses, maxDiscount }) => {
     const payload = {
       code: String(code || ''),
       type: String(type || 'amount'),
@@ -315,6 +315,7 @@ export const useStore = create((set, get) => ({
       active: active === undefined ? true : Boolean(active),
       isRepeatable: Boolean(isRepeatable),
       maxUses: maxUses === undefined ? undefined : Number(maxUses) || 0,
+      maxDiscount: maxDiscount === undefined || maxDiscount === null ? null : Number(maxDiscount) || null,
       validFrom: validFrom ?? null,
       validTo: validTo ?? null,
     }
@@ -327,6 +328,7 @@ export const useStore = create((set, get) => ({
       active: patch?.active === undefined ? undefined : Boolean(patch.active),
       isRepeatable: patch?.isRepeatable === undefined ? undefined : Boolean(patch.isRepeatable),
       maxUses: patch?.maxUses === undefined ? undefined : Number(patch.maxUses) || 0,
+      maxDiscount: patch?.maxDiscount === undefined ? undefined : (patch.maxDiscount === null ? null : Number(patch.maxDiscount) || null),
       validFrom: patch?.validFrom === undefined ? undefined : patch.validFrom,
       validTo: patch?.validTo === undefined ? undefined : patch.validTo,
     }
